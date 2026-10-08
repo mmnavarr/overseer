@@ -1,6 +1,8 @@
+/* Panel and forms run a touch smaller than Tern's base; every other size is relative to it. */
 [data-role='overseer.navigator'] {
   gap: 12px;
   color: var(--t1);
+  font-size: 0.93em;
 }
 [data-role='overseer.header'],
 [data-role='overseer.projectHeader'] {
@@ -9,17 +11,21 @@
   flex-wrap: wrap;
 }
 [data-role='overseer.header'] {
-  padding-bottom: 10px;
-  border-bottom: 1px solid color-mix(in srgb, var(--t4) 20%, transparent);
+  padding-bottom: 2px;
 }
 [data-role='overseer.projectHeader'] {
   padding-bottom: 4px;
 }
 [data-role='overseer.heading'],
 [data-role='overseer.formHeading'] {
-  font-size: 1.15em;
   font-weight: 650;
   color: var(--t1);
+}
+[data-role='overseer.heading'] {
+  font-size: 1em;
+}
+[data-role='overseer.formHeading'] {
+  font-size: 1.15em;
 }
 [data-role='overseer.titleGroup'] {
   align-items: center;
@@ -371,6 +377,7 @@
 [data-role='overseer.form'] {
   color: var(--t1);
   padding: 16px;
+  font-size: 0.93em;
 }
 [data-role='overseer.backLink'] {
   margin: -4px 0 10px -6px;
