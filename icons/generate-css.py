@@ -3,33 +3,30 @@
 
 Tern plugin stylesheets can't load local image files and ignore SVG masks, but
 they render data URIs as background images. Colours can't come from CSS
-variables inside a data URI, so each Octicon is painted with GitHub's own
-colours, picked per appearance with light-dark(). Images keep their own colours.
+variables inside a data URI, so each icon is painted with its brand's own
+colours, picked per appearance with light-dark().
 
-Octicons: https://github.com/primer/octicons (MIT, see LICENSE). linear.png is
-Linear's logo mark. Run after replacing an icon:  python3 icons/generate-css.py
+Octicons: https://github.com/primer/octicons (MIT, see LICENSE). linear.svg is
+Linear's official logo mark from its brand assets. Run after replacing an icon:
+python3 icons/generate-css.py
 """
-import base64
 from pathlib import Path
 from urllib.parse import quote
 
 HERE = Path(__file__).resolve().parent
-# (selector, Octicon, light colour, dark colour), using GitHub Primer colours.
+# (selector, icon, light colour, dark colour).
 ICONS = [
-    # Pull request states.
+    # Pull request states, in GitHub Primer colours.
     ("[data-role='overseer.prDraft']", "git-pull-request-draft-16.svg", "#59636e", "#9198a1"),
     ("[data-role='overseer.prOpen']", "git-pull-request-16.svg", "#1a7f37", "#3fb950"),
     ("[data-role='overseer.prMerged']", "git-merge-16.svg", "#8250df", "#ab7df8"),
     ("[data-role='overseer.prClosed']", "git-pull-request-closed-16.svg", "#d1242f", "#f85149"),
+    # Linear ticket link: Linear's dark mark on light, light mark on dark.
+    ("[data-role='overseer.linear']", "linear.svg", "#222326", "#ffffff"),
     # Help button beside the Projects heading: muted, accent blue on hover/focus.
     ("[data-role='overseer.infoButton']", "info-16.svg", "#59636e", "#9198a1"),
     ("[data-role='overseer.infoButton']:hover,\n[data-role='overseer.infoButton']:focus-visible",
      "info-16.svg", "#0969da", "#4493f8"),
-]
-# (selector, image) painted as-is in both appearances.
-IMAGES = [
-    # Linear ticket link, beside the pull request badge.
-    ("[data-role='overseer.linear']", "linear.png"),
 ]
 
 
@@ -46,14 +43,6 @@ def main() -> None:
             f"{selector} {{\n"
             f"  /* icons/{name} */\n"
             f"  background-image: light-dark({data_uri(svg, light)}, {data_uri(svg, dark)});\n"
-            "}"
-        )
-    for selector, name in IMAGES:
-        encoded = base64.b64encode((HERE / name).read_bytes()).decode()
-        rules.append(
-            f"{selector} {{\n"
-            f"  /* icons/{name} */\n"
-            f'  background-image: url("data:image/png;base64,{encoded}");\n'
             "}"
         )
     (HERE.parent / "icons.css").write_text("\n".join(rules) + "\n")
