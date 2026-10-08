@@ -1,0 +1,14 @@
+schema = 1
+id = "overseer"
+name = "Overseer"
+version = "1.10.1"
+description = "Agent manager for parallel work: projects, Worktrunk worktrees, and a Tern session per worktree."
+icon = "branch"
+host = "host.luau"
+window = "window.luau"
+styles = ["styles.css", "icons.css"]
+
+[[blocks]]
+id = "form"
+title = "Overseer form"
+palette = false
