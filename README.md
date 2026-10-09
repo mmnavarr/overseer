@@ -24,7 +24,7 @@ Running five agents on five branches means five checkouts, a pile of terminals, 
 
 ## The panel
 
-Each project is a local Git repository. Under it, every worktree is a row, and under each row are its open tabs. Click a tab to jump straight to it. Hover a row for its branch, path, line counts, ahead/behind and PR.
+The panel stays with you: it sits on the left of whichever tab you're looking at, across every session, and keeps the width you give it. Each project is a local Git repository. Under it, every worktree is a row, and under each row are its open tabs. Click a tab to jump straight to it. Hover a row for its branch, path, line counts, ahead/behind and PR.
 
 <table>
 <tr>
@@ -69,9 +69,9 @@ Linking reloads the plugin whenever the source changes. Use `tern plugin install
 
 ## Use it
 
-1. **Open Projects:** <kbd>⌘</kbd><kbd>⌥</kbd><kbd>⇧</kbd><kbd>P</kbd>, or **Open Projects** in the command palette.
+1. **Show Projects:** <kbd>⌘</kbd><kbd>⌥</kbd><kbd>⇧</kbd><kbd>P</kbd>, or **Show or hide Projects** in the command palette. Press it again while the panel has focus to hide it.
 2. **Add a repo:** **+** in the header opens the folder picker.
-3. **Open a worktree:** click its row. Its session opens with the panel docked on the left.
+3. **Open a worktree:** click its row. Its session opens, and the panel comes with it.
 4. **New worktree:** **+** next to a project. Type a branch name (and, if you like, a friendly display name). Setup runs in a background **Create** tab, and a notification tells you when it's ready.
 5. **Everything else is a right-click away:**
 
@@ -141,7 +141,7 @@ This section is for coding agents (and humans) changing Overseer. It favors comp
 Overseer is a Tern plugin written in Luau. `plugin.toml` declares two entry points:
 
 - `host.luau` runs in Tern's host and renders the `overseer.form` block, the native form used for New worktree, Rename, Change base branch and Set Linear workspace. `input.luau` is its Unicode-aware text editing.
-- `window.luau` runs once per Tern window. It owns the Projects navigator (a canvas), event hooks, the background job tracker, the Carly export, and Visualize PR canvases.
+- `window.luau` runs once per Tern window. It owns the Projects panel (a canvas that follows you between tabs), event hooks, the background job tracker, the Carly export, and Visualize PR canvases.
 
 Tern APIs are typed in the definitions Tern generates: `/Applications/Tern.app/Contents/MacOS/tern plugin types <dir>` writes `tern.d.luau`. Read it before using an API you haven't used here.
 
@@ -151,9 +151,9 @@ Tern gives **every plugin callback 50 ms**. A single overrun disables that hook 
 
 Consequences, enforced throughout `window.luau`:
 
-- **Never draw inline.** Call `redraw(cx)`. It queues one coalesced `draw` in its own `tern.timer(0)` callback.
-- `draw` renders **only the current session's navigator**. Every worktree session has its own navigator, and the hidden ones catch up on the `focus` event when their session is shown. Drawing all of them made one click cost 40 ms with eight sessions.
-- Split expensive sequences across callbacks. `ensureSession` creates the session in the click, then opens its navigator in a later timer callback. `separately(fn)` runs `fn` in its own callback with errors reported.
+- **Never draw inline from clicks or process results.** Call `redraw(cx)`. It queues one coalesced `draw` in its own `tern.timer(0)` callback. Tab, pane and focus events are the exception: they move and draw the panel directly (see below), so a disabled timer hook can't freeze it.
+- There is **one panel per window**, so a draw costs the same however many sessions are open. (When every session had its own panel, one click cost 40 ms with eight sessions.)
+- Split expensive sequences across callbacks. `openForm` opens the panel first and swaps the form in on the next tick. `separately(fn)` runs `fn` in its own callback with errors reported.
 - Process results (`tern.process.run` callbacks) must stay small too. They update state and call `redraw`.
 
 When debugging an overrun, add temporary `tern.log.warn(string.format("PROBE …=%.1f", tern.now() - t0))` timings, reproduce in an isolated window (below), and remove them afterwards.
@@ -162,7 +162,7 @@ When debugging an overrun, add temporary `tern.log.warn(string.format("PROBE …
 
 | File | What lives there |
 |---|---|
-| `window.luau` | Project registry, model building (`model`), drawing (`draw`/`redraw`), session binding (`ensureSession`, `openWorktree`), forms swapped into the panel's slot, background jobs (`launchCreation`, `checkJobs`), ticket links (`ticketOf`, `ticketFor`), Linear workspace lookup, Visualize PR canvases, the Carly export, hooks and the 750 ms `tick`. |
+| `window.luau` | Project registry, model building (`model`), drawing (`draw`/`redraw`), the following panel (`slot`, `pin`, `follow`, `togglePanel`), session binding (`ensureSession`, `openWorktree`), forms swapped into the panel's slot, background jobs (`launchCreation`, `checkJobs`), ticket links (`ticketOf`, `ticketFor`), Linear workspace lookup, Visualize PR canvases, the Carly export, hooks and the 750 ms `tick`. |
 | `worktrunk.luau` | Every external command: `wt list`, validation, the creation and removal command lines, `git` status, `gh pr list`/`gh pr view`/`gh pr diff`, `linear auth whoami`. Commands are argv arrays; `find_executable` checks Homebrew, `/usr/local/bin`, `~/.bun/bin` and `~/.local/bin`. |
 | `visualize.luau` | Visualize PR: prompt, read-only omp invocation, output extraction, cache. |
 | `view.luau` | Pure render: model → Tern UI node tree (rows, badges, tab rows, confirmations, menus). |
@@ -183,14 +183,21 @@ Tern's plugin KV (`~/Library/Application Support/Tern/plugin-data/overseer/kv.js
 | `sessions` | `{[path]: {id, host, project}}` | Worktree → Tern session binding. |
 | `icebox` | `{[projectId]: {[path]: true}}` | Parked worktrees. `show-icebox` is the header toggle. |
 | `jobs` | `{[id]: {kind = "create" \| "remove", project, receipt, pane, …}}` | Running creations and deletions; creations also carry `branch`, `displayName?` and `agentPrompt?`. Persisted so a plugin reload doesn't lose them. |
+| `panel-open`, `panel-share` | `boolean`, `number` | Whether you want the Projects panel shown (the shortcut sets it), and its width as a share of the tab. |
 
 Files under `tern.plugin.data`: `creation-<id>.status` and `removal-<id>.status` receipts written by the helper, and the `visual-pr/<project>-<pr>-<headsha>.md` outline cache.
 
-In-memory only: the per-project `cache` (worktrees, PRs, loading/error flags), `rendered` signatures per navigator pane, the Linear default workspace, open outline canvases.
+In-memory only: the per-project `cache` (worktrees, PRs, loading/error flags), `rendered` signatures per panel pane, the panel's pane and last tab, the Linear default workspace, open outline canvases.
 
 ### Flows
 
-**Refresh.** `refresh` runs `wt list --format=json` per project, then `refreshPullRequests` (one `gh pr list` per GitHub project, at most every 2 minutes, immediately after ↻ or a worktree set change). An open navigator refreshes every 15 s from `tick`.
+**Refresh.** `refresh` runs `wt list --format=json` per project, then `refreshPullRequests` (one `gh pr list` per GitHub project, at most every 2 minutes, immediately after ↻ or a worktree set change). An open panel refreshes every 15 s from `tick`.
+
+**The following panel.** Tern panes belong to one tab, and plugins can't add a window-level sidebar, so the window keeps exactly one Projects slot and moves it into whichever tab is shown, left of everything and full height. `slot` finds it: the navigator canvas or a form shown in its place, adopting what a reload left open and closing any extra. `pin` moves it with `move_to_tab` (or `unpark`) then `move(…, "left")` and steers the split ratio to the remembered share, since Tern resizes in cells and hidden tabs measure differently. `follow` runs on `focus`, `tab_created`, `tab_closed`, `pane_created`, `pane_closed`, `window_start` and every `tick`, so one disabled hook can't strand the panel. Moves work across sessions. Edge cases:
+
+- **Last terminal in a tab closed:** the panel would be left alone, so `follow` parks it; the tab closes as Tern would have, and the next shown tab (or new tab) takes the panel back.
+- **Overseer closes a session:** `closeManagedSession` switches away and calls `follow` first, so the panel leaves before the session closes.
+- **Tern closes the panel's tab or session:** the panel dies with it. If you wanted it (`panel-open`) and its last tab is gone, `follow` opens a fresh one in the shown tab. If its tab is still there, you closed the panel yourself, and it stays closed until the shortcut.
 
 **Create.** Form or Carly → `wt.validate` → `launchCreation` opens a background tab running `worktree-operation.sh` and records a job → `checkJobs` (on `tick`) reads the receipt → on success: toast, apply the display name by branch (`applyCreatedName`), and for ticket worktrees `startTicketAgent` opens the session and calls `cx.agents:start({command = "omp", prompt = …})`. Creation succeeded means `wt` exited 0, not that every hook succeeded.
 
@@ -243,7 +250,8 @@ Other conventions:
 - macOS only (folder picker, paths, Tern desktop).
 - Visualize PR fails on PRs whose diff exceeds GitHub's 20,000-line API limit (`gh pr diff` returns HTTP 406). The tab shows the error.
 - omp 18.8.5 reports its ask prompt as `working` rather than `waiting_input`, so an omp agent waiting on a question pulses instead of turning blue.
-- If the timer hook is ever disabled, the panel stops redrawing until the plugin reloads (clicks still work).
+- The panel moves into each tab you switch to, so every switch animates briefly and resizes the terminals in both tabs (full-screen programs redraw). In a tab split top-and-bottom it sits beside the top half.
+- If the timer hook is ever disabled, clicks and process results stop redrawing the panel until the plugin reloads; tab and focus changes still redraw it.
 - A plugin reload during a Visualize PR run, including the one Tern does when you edit a file in a linked plugin, ends the run and leaves its tab on the waiting message. Run it again.
 - Tern 0.6.2 currently shows Mermaid blocks in canvases as source rather than diagrams (seen in both themes), so outline diagrams appear as code until Tern renders them again.
 - Multiple Tern windows work but haven't been exhaustively tested together.
