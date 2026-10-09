@@ -1,6 +1,6 @@
 <div align="center">
 
-# Overseer
+<h1><img src="docs/images/logo-640.png" alt="Overseer" width="320"></h1>
 
 **Mission control for parallel agent work.**
 
