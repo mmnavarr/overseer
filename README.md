@@ -121,6 +121,7 @@ flowchart LR
 
 - **Worktrunk owns the worktrees.** Overseer calls `wt` and never passes `--yes`, `--no-hooks` or force flags. Your hooks and approval prompts run in a visible tab.
 - **Tern owns the sessions.** Overseer remembers which session belongs to which worktree and switches between them.
+- **The panel follows you.** Tern plugins can't pin a sidebar to the window, so Overseer keeps one Projects panel per window and moves it into whichever tab you're on.
 - **Everything else is a read.** PR badges, ticket links, agent status and change counts come from `gh`, `linear`, `git` and Tern's own agent state.
 
 ## Safety
@@ -242,7 +243,7 @@ Other conventions:
 
 - Editing any file in a linked plugin reloads it in every running Tern, which re-enables disabled hooks.
 - After changing an icon, run `python3 icons/generate-css.py`.
-- Bump `version` in `plugin.toml` for user-visible changes.
+- Bump `version` in `plugin.toml` for user-visible changes and add an entry to [`CHANGELOG.md`](CHANGELOG.md). A change to how the panel or its state is structured is a major version.
 - Keep external commands in `worktrunk.luau` as argv arrays. Shell is only used where a redirect is needed, with arguments as `$0…$n`.
 
 ### Known limitations
@@ -264,6 +265,10 @@ Other conventions:
 - Visualize PR follows [humanlayer/skills](https://github.com/humanlayer/skills)' visual-pr skill, vendored at `ca7c8088db69` (MIT, `skills/visual-pr/LICENSE`).
 - The ticket icon is Linear's official logo mark from [Linear's brand assets](https://linear.app/brand) (`icons/linear.svg`). Linear and its logo are trademarks of Linear Orbit, Inc., used here only to link to Linear tickets.
 - Built on [Tern](https://docs.stencil.so/tern/), [Worktrunk](https://worktrunk.dev) and [omp](https://omp.sh).
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md). 2.0 replaced the panel-per-session layout with one panel that follows you between tabs.
 
 ## License
 
