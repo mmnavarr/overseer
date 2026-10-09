@@ -98,7 +98,7 @@ The project is the one you're in, or name it: *"…for ENG-123 in api"*. If the 
 
 ### Visualize a PR
 
-<img src="docs/images/visualize-pr.png" alt="A Visualize PR outline: why the change exists, things to note, and the change outline" width="900">
+<img src="docs/images/visualize-pr.png" alt="A Visualize PR outline: why the change exists, things to note, and a sequence diagram of the change" width="900">
 
 Overseer fetches the PR's metadata and full diff from GitHub, then has omp write an outline following HumanLayer's [visual-pr](https://github.com/humanlayer/skills) skill: why the change exists, what to watch for, and Mermaid diagrams, file-tree diffs and pseudocode. The local checkout only adds surrounding context. It takes a minute or two, and unchanged PRs reopen instantly from a cache.
 
@@ -250,11 +250,9 @@ Other conventions:
 
 - macOS only (folder picker, paths, Tern desktop).
 - Visualize PR fails on PRs whose diff exceeds GitHub's 20,000-line API limit (`gh pr diff` returns HTTP 406). The tab shows the error.
-- omp 18.8.5 reports its ask prompt as `working` rather than `waiting_input`, so an omp agent waiting on a question pulses instead of turning blue.
 - The panel moves into each tab you switch to, so every switch animates briefly and resizes the terminals in both tabs (full-screen programs redraw). In a tab split top-and-bottom it sits beside the top half.
 - If the timer hook is ever disabled, clicks and process results stop redrawing the panel until the plugin reloads; tab and focus changes still redraw it.
 - A plugin reload during a Visualize PR run, including the one Tern does when you edit a file in a linked plugin, ends the run and leaves its tab on the waiting message. Run it again.
-- Tern 0.6.2 currently shows Mermaid blocks in canvases as source rather than diagrams (seen in both themes), so outline diagrams appear as code until Tern renders them again.
 - Multiple Tern windows work but haven't been exhaustively tested together.
 
 ---
