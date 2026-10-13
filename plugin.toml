@@ -1,7 +1,7 @@
 schema = 1
 id = "overseer"
 name = "Overseer"
-version = "2.0.0"
+version = "2.0.1"
 description = "Agent manager for parallel work: projects, Worktrunk worktrees, and a Tern session per worktree."
 icon = "branch"
 host = "host.luau"

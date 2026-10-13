@@ -73,10 +73,10 @@ function M.outline(project, worktree, number, ticketUrl, done)
 			table.insert(argv, prompt(meta, dir, worktree, ticketUrl))
 			-- omp is a Bun script: its directory must be on PATH for `env bun`.
 			local path = string.match(omp, "^(.*)/[^/]+$") .. ":" .. (tern.getenv("PATH") or "/usr/bin:/bin")
-			local started, startErr = pcall(tern.process.run, argv,
-				{ cwd = worktree.path, timeout_ms = TIMEOUT_MS, env = { PATH = path } },
-				function(result, runCx)
+			wt.spawn(argv, { cwd = worktree.path, timeout_ms = TIMEOUT_MS, env = { PATH = path } },
+				function(result, runCx, startErr)
 					tern.fs.remove(dir)
+					if not result then done(nil, "Could not start omp: " .. startErr, runCx, meta); return end
 					if result.timed_out then done(nil, "omp took longer than 10 minutes", runCx, meta); return end
 					local outline = result.status == 0 and markdown(result.stdout)
 					if not outline then
@@ -87,7 +87,6 @@ function M.outline(project, worktree, number, ticketUrl, done)
 					tern.fs.write(cached, outline)
 					done(outline, nil, runCx, meta)
 				end)
-			if not started then tern.fs.remove(dir); done(nil, "Could not start omp: " .. tostring(startErr), diffCx, meta) end
 		end)
 	end)
 end

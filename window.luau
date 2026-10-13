@@ -948,9 +948,10 @@ function pickProject(cx)
 	end
 	table.insert(argv, pickerStart())
 	-- The picker waits for the user; give up after 30 minutes untouched.
-	tern.process.run(argv, { timeout_ms = 30 * 60 * 1000 }, function(result, nextCx)
+	wt.spawn(argv, { timeout_ms = 30 * 60 * 1000 }, function(result, nextCx, startErr)
 		picking = false
 		if not nextCx then return end
+		if not result then report(nextCx, "Couldn't open the folder picker: " .. startErr, "Folder picker failed"); return end
 		if result.status ~= 0 then
 			-- Cancel (AppleScript error -128), timeouts, and pickers ended by a
 			-- signal (status -1, e.g. a plugin reload) need no message.
@@ -1042,10 +1043,11 @@ local function changeBase(cx, pane, request, response)
 	if base == "" or base:find("[%c%s]") or base:sub(1, 1) == "-" then
 		rejectForm(cx, pane, "Enter a local branch name, such as main."); return
 	end
-	tern.process.run({ "git", "-C", project.path, "show-ref", "--verify", "--quiet", "refs/heads/" .. base },
-		{ timeout_ms = 15000 }, function(result, nextCx)
+	wt.spawn({ "git", "-C", project.path, "show-ref", "--verify", "--quiet", "refs/heads/" .. base },
+		{ timeout_ms = 15000 }, function(result, nextCx, startErr)
 			if not nextCx then return end
 			if not nextCx.session:pane(pane) then finishForm(nextCx, pane); return end
+			if not result then rejectForm(nextCx, pane, "Couldn't check the branch: " .. startErr); return end
 			if result.status ~= 0 then
 				rejectForm(nextCx, pane, "No local branch named " .. base .. " in " .. project.name .. ".")
 				return
@@ -1194,7 +1196,7 @@ local function helperFailed(id, job)
 	local pid = tonumber(tern.fs.read(pidFile))
 	if not pid then return true end
 	probing[id] = true
-	tern.process.run({ "/bin/kill", "-0", tostring(pid) }, { timeout_ms = 5000 }, function(result)
+	wt.spawn({ "/bin/kill", "-0", tostring(pid) }, { timeout_ms = 5000 }, function(result)
 		probing[id] = nil
 		if result and result.status ~= 0 then dead[id] = true end
 	end)

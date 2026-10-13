@@ -155,16 +155,17 @@ Consequences, enforced throughout `window.luau`:
 - **Never draw inline from clicks or process results.** Call `redraw(cx)`. It queues one coalesced `draw` in its own `tern.timer(0)` callback. Tab, pane and focus events are the exception: they move and draw the panel directly (see below), so a disabled timer hook can't freeze it.
 - There is **one panel per window**, so a draw costs the same however many sessions are open. (When every session had its own panel, one click cost 40 ms with eight sessions.)
 - Split expensive sequences across callbacks. `openForm` opens the panel first and swaps the form in on the next tick. `separately(fn)` runs `fn` in its own callback with errors reported.
+- **Start processes only through `wt.spawn`.** Starting a process can stall for tens of milliseconds while Tern is busy, for example while a terminal prints a dependency install. `wt.spawn` starts each one in a timer callback of its own, so a refresh of several projects never starts them all in one callback. Never call `tern.process.run` directly.
 - Process results (`tern.process.run` callbacks) must stay small too. They update state and call `redraw`.
 
-When debugging an overrun, add temporary `tern.log.warn(string.format("PROBE …=%.1f", tern.now() - t0))` timings, reproduce in an isolated window (below), and remove them afterwards.
+When debugging an overrun, add temporary `tern.log.warn(string.format("PROBE …=%.1f", tern.now() - t0))` timings, reproduce in an isolated window (below), and remove them afterwards. A probe only logs once its step finishes, so to find a step that overruns, also log a marker *before* each step: the last marker before `exceeded its budget` names it. Several terminals running `yes` make a busy Tern that reproduces overruns within minutes.
 
 ### Files
 
 | File | What lives there |
 |---|---|
 | `window.luau` | Project registry, model building (`model`), drawing (`draw`/`redraw`), the following panel (`slot`, `pin`, `follow`, `togglePanel`), session binding (`ensureSession`, `openWorktree`), forms swapped into the panel's slot, background jobs (`launchCreation`, `checkJobs`), ticket links (`ticketOf`, `ticketFor`), Linear workspace lookup, Visualize PR canvases, the Carly export, hooks and the 750 ms `tick`. |
-| `worktrunk.luau` | Every external command: `wt list`, validation, the creation and removal command lines, `git` status, `gh pr list`/`gh pr view`/`gh pr diff`, `linear auth whoami`. Commands are argv arrays; `find_executable` checks Homebrew, `/usr/local/bin`, `~/.bun/bin` and `~/.local/bin`. |
+| `worktrunk.luau` | Every external command: `wt list`, validation, the creation and removal command lines, `git` status, `gh pr list`/`gh pr view`/`gh pr diff`, `linear auth whoami`. Commands are argv arrays started by `spawn`, one per timer callback (see the 50 ms rule); `find_executable` checks Homebrew, `/usr/local/bin`, `~/.bun/bin` and `~/.local/bin`. |
 | `visualize.luau` | Visualize PR: prompt, read-only omp invocation, output extraction, cache. |
 | `view.luau` | Pure render: model → Tern UI node tree (rows, badges, tab rows, confirmations, menus). |
 | `worktree-operation.sh` | The helper that runs `wt switch --create` / `wt remove` in a visible terminal and writes an atomic completion receipt. |

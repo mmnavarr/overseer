@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.0.1 (2026-10-13)
+
+- **Fixed:** Projects could freeze (stop refreshing, never finish a new worktree) or answer every click with `Nothing handles "…" here` until the plugin reloaded. While Tern was busy, such as during a worktree's dependency install, starting the background commands for a refresh could take longer than the 50 ms Tern allows a plugin callback, and Tern then switched that part of Overseer off. Each command now starts in a callback of its own.
+
 ## 2.0.0 (2026-10-09)
 
 The Projects panel is now one panel per window that follows you, instead of one panel per worktree session.

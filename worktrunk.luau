@@ -8,19 +8,28 @@ local function deferred_error(done, message)
 	end)
 end
 
-local function run(argv, done, cwd)
-	local ok, err = pcall(function()
-		tern.process.run(argv, { timeout_ms = TIMEOUT_MS, cwd = cwd }, function(result, cx)
-			if result.timed_out then
-				done(nil, "Command timed out after 15 seconds: " .. argv[1], cx)
-			else
-				done(result, nil, cx)
-			end
-		end)
+-- Starts argv in a timer callback of its own and calls fn(result, cx) when it
+-- ends, or fn(nil, cx, err) when it can't start. Starting a process can stall
+-- for tens of milliseconds while Tern is busy (for example, a terminal
+-- printing a dependency install), and Tern disables a plugin hook after one
+-- 50 ms overrun, so no callback ever starts more than one process.
+function M.spawn(argv, options, fn)
+	tern.timer(0, function(cx)
+		local ok, err = pcall(tern.process.run, argv, options, fn)
+		if not ok then fn(nil, cx, tostring(err)) end
 	end)
-	if not ok then
-		deferred_error(done, "Could not start " .. argv[1] .. ": " .. tostring(err))
-	end
+end
+
+local function run(argv, done, cwd)
+	M.spawn(argv, { timeout_ms = TIMEOUT_MS, cwd = cwd }, function(result, cx, err)
+		if not result then
+			done(nil, "Could not start " .. argv[1] .. ": " .. err, cx)
+		elseif result.timed_out then
+			done(nil, "Command timed out after 15 seconds: " .. argv[1], cx)
+		else
+			done(result, nil, cx)
+		end
+	end)
 end
 
 local function output_line(text)
