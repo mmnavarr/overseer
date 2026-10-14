@@ -1,6 +1,18 @@
 -- Read-only discovery uses argv subprocesses; creation and removal run in a terminal.
 local M = {}
 local TIMEOUT_MS = 15000
+local WINDOWS = tern.runtime.os == "windows"
+
+local function absolute_path(path)
+	if type(path) ~= "string" or string.find(path, "\0", 1, true) then return false end
+	if not WINDOWS then return string.sub(path, 1, 1) == "/" end
+	return string.match(path, "^%a:[/\\]") ~= nil
+		or string.match(path, "^[/\\][/\\][^/\\]+[/\\][^/\\]+") ~= nil
+end
+
+local function normalize_path(path)
+	return if WINDOWS then (string.gsub(path, "\\", "/")) else path
+end
 
 local function deferred_error(done, message)
 	tern.timer(0, function(cx)
@@ -25,7 +37,7 @@ end
 
 local function output_line(text)
 	-- Remove only Git's final record delimiter, never whitespace in a path.
-	return (string.gsub(text, "\n$", ""))
+	return (string.gsub(text, "\r?\n$", ""))
 end
 
 local function command_error(label, result)
@@ -46,30 +58,45 @@ end
 
 local function find_executable(name)
 	-- Match executable-name lookup without invoking the user's shell or its hooks.
+	local separator = if WINDOWS then ";" else ":"
+	local filename = name .. (if WINDOWS then ".exe" else "")
 	local path = tern.getenv("PATH") or ""
-	for directory in string.gmatch(path .. ":", "(.-):") do
-		if string.sub(directory, 1, 1) == "/" then
-			local candidate = directory .. "/" .. name
-			if tern.fs.exists(candidate) then
-				return candidate
-			end
+	for directory in string.gmatch(path .. separator, "(.-)" .. separator) do
+		directory = string.gsub(directory, '^"(.*)"$', "%1")
+		if absolute_path(directory) then
+			local candidate = normalize_path(directory) .. "/" .. filename
+			-- Microsoft's wt.exe alias launches Windows Terminal, not Worktrunk.
+			local terminal_alias = WINDOWS and name == "wt"
+				and string.find(string.lower(candidate), "/microsoft/windowsapps/wt.exe", 1, true) ~= nil
+			if not terminal_alias and tern.fs.exists(candidate) then return candidate end
 		end
 	end
-	local home = tern.getenv("HOME") or ""
-	for _, candidate in ipairs({
+	local home = (if WINDOWS then tern.getenv("USERPROFILE") else tern.getenv("HOME")) or ""
+	local candidates = if WINDOWS then {
+		home .. "/.cargo/bin/" .. filename,
+		(tern.getenv("LOCALAPPDATA") or "") .. "/Microsoft/WinGet/Links/" .. filename,
+	} else {
 		"/opt/homebrew/bin/" .. name, "/usr/local/bin/" .. name,
 		home .. "/.bun/bin/" .. name, home .. "/.local/bin/" .. name,
-	}) do
-		if tern.fs.exists(candidate) then
-			return candidate
-		end
+	}
+	-- Winget's portable package directory works before Tern inherits its new PATH.
+	if WINDOWS and (name == "git-wt" or name == "wt") then
+		table.insert(candidates, (tern.getenv("LOCALAPPDATA") or "")
+			.. "/Microsoft/WinGet/Packages/max-sixty.worktrunk_Microsoft.Winget.Source_8wekyb3d8bbwe/" .. filename)
+	end
+	for _, candidate in ipairs(candidates) do
+		if tern.fs.exists(candidate) then return normalize_path(candidate) end
 	end
 	return nil
 end
 
+local wt_executable
 local function resolve_wt()
-	return find_executable("wt")
-		or error("Worktrunk (wt) was not found. Install it and make wt available on Tern's PATH.", 0)
+	if not wt_executable then
+		wt_executable = (if WINDOWS then find_executable("git-wt") else nil) or find_executable("wt")
+			or error("Worktrunk was not found. Install it and make " .. (if WINDOWS then "git-wt" else "wt") .. " available on Tern's PATH.", 0)
+	end
+	return wt_executable
 end
 
 local function primary_checkout(porcelain)
@@ -140,7 +167,7 @@ end
 -- Inspects a folder chosen in the picker. done(project, err, cx, notRepo):
 -- notRepo is true when the folder isn't inside a Git checkout at all.
 function M.inspect(path, done)
-	if type(path) ~= "string" or string.sub(path, 1, 1) ~= "/" or string.find(path, "\0", 1, true) then
+	if not absolute_path(path) then
 		deferred_error(done, "The folder picker returned an unexpected path.")
 		return
 	end
@@ -157,13 +184,14 @@ function M.inspect(path, done)
 			end
 			return
 		end
-		local common_dir = output_line(common.stdout)
-		if string.sub(common_dir, 1, 1) ~= "/" then
+		local common_dir = normalize_path(output_line(common.stdout))
+		if not absolute_path(common_dir) then
 			done(nil, "Git did not return an absolute common directory. Update Git and try again.", cx)
 			return
 		end
-		-- pwd -P resolves symlinks in a separate process without changing Tern's cwd.
-		run({ "/bin/pwd", "-P" }, function(physical, physical_err, physical_cx)
+		-- Git for Windows resolves junctions; pwd -P handles POSIX symlinks.
+		local physical_argv = if WINDOWS then { "git", "-C", common_dir, "rev-parse", "--absolute-git-dir" } else { "/bin/pwd", "-P" }
+		run(physical_argv, function(physical, physical_err, physical_cx)
 			if not physical then
 				done(nil, physical_err, physical_cx)
 				return
@@ -172,7 +200,8 @@ function M.inspect(path, done)
 				done(nil, command_error("Cannot resolve Git common directory", physical), physical_cx)
 				return
 			end
-			local id = output_line(physical.stdout)
+			local id = normalize_path(output_line(physical.stdout))
+			if WINDOWS then id = string.lower(id) end
 			git(path, { "worktree", "list", "--porcelain", "-z" }, function(trees, trees_err, trees_cx)
 				if not trees then
 					done(nil, trees_err, trees_cx)
@@ -196,7 +225,7 @@ function M.inspect(path, done)
 						done(nil, command_error("The primary checkout is unavailable", top), top_cx)
 						return
 					end
-					local checkout = output_line(top.stdout)
+					local checkout = normalize_path(output_line(top.stdout))
 					discover_base({ id = id, name = string.match(checkout, "([^/]+)$") or checkout, path = checkout, base = "" }, done)
 				end)
 			end)
@@ -257,9 +286,10 @@ local function parse_worktrees(text, project)
 			local main = if schema2 then (if type(facts) == "table" then facts.main else nil) else row.is_main
 			local detached = if type(facts) == "table" then facts.detached else nil
 			local changes = if schema2 then (if type(facts) == "table" then facts.changes else nil) else row.working_tree
-			if type(path) ~= "string" or string.sub(path, 1, 1) ~= "/" or string.find(path, "\0", 1, true) then
+			if not absolute_path(path) then
 				error("Worktrunk returned a worktree without a valid absolute path", 0)
 			end
+			path = normalize_path(path)
 			if type(main) ~= "boolean" or type(detached) ~= "boolean" then
 				error("Worktrunk returned invalid main/detached flags for " .. path, 0)
 			end
@@ -318,7 +348,11 @@ function M.list(project, done)
 		deferred_error(done, tostring(wt))
 		return
 	end
-	run({ wt, "-C", project.path, "list", "--format=json" }, function(result, err, cx)
+	local argv = if WINDOWS then {
+		"powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive",
+		"-ExecutionPolicy", "Bypass", "-File", tern.plugin.dir .. "/worktrunk-list.ps1", wt, project.path,
+	} else { wt, "-C", project.path, "list", "--format=json" }
+	run(argv, function(result, err, cx)
 		if not result then
 			done(nil, err, cx)
 		elseif result.status ~= 0 then
@@ -414,10 +448,25 @@ local function octal_bytes(value)
 end
 
 local function operation_command(mode, project, target, option, receipt)
-	if type(receipt) ~= "string" or string.sub(receipt, 1, 1) ~= "/" then
+	if not absolute_path(receipt) then
 		error("The operation receipt must have an absolute path", 0)
 	end
-	local args = { tern.plugin.dir .. "/worktree-operation.sh", mode, resolve_wt(), project.path, target, option, receipt }
+	local helper = tern.plugin.dir .. (if WINDOWS then "/worktree-operation.ps1" else "/worktree-operation.sh")
+	local args = { helper, mode, resolve_wt(), project.path, target, option, receipt }
+	if WINDOWS then
+		for _, value in args do
+			if type(value) ~= "string" or string.find(value, "\0", 1, true) then
+				error("Worktrunk arguments must be strings without NUL bytes", 0)
+			end
+		end
+		-- Only Base64 ASCII crosses the user's shell. JSON preserves literal paths,
+		-- Unicode and empty arguments; PowerShell's command encoding is UTF-16LE.
+		local payload = tern.base64.encode(tern.json.encode(args))
+		local script = "$a=ConvertFrom-Json ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('"
+			.. payload .. "'))); & $a[0] $a[1] $a[2] $a[3] $a[4] $a[5] $a[6]; exit $LASTEXITCODE"
+		return "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -EncodedCommand "
+			.. tern.base64.encode((string.gsub(script, ".", "%0\0")))
+	end
 	local program = {}
 	-- macOS Bash 3.2's printf -v can reuse the previous value for an empty
 	-- %b result. A prefix makes every assignment nonempty; strip it afterward.

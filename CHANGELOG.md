@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- **Windows project addition.** **+** opens Explorer's native folder dialog. Git discovery accepts drive-letter and UNC paths, resolves junctions, and deduplicates linked checkouts. Windows executable lookup prefers `git-wt.exe` over Windows Terminal's `wt.exe` alias, supports Winget/Cargo installs, and reuses resolved Worktrunk paths. Registration and panel discovery run in separate callbacks to stay within Tern's hook budget.
+- Windows Worktrunk listing launches through a PowerShell helper: native executable startup can exceed Tern's 50 ms UI callback limit and otherwise disable refresh/redraw.
+- **Windows worktree creation/removal.** Accept drive-letter and UNC receipt paths and use a native PowerShell operation helper instead of `/bin/bash`. Encoded arguments preserve literal paths, Unicode and empty arguments. Worktrunk retains terminal access and hook approvals; atomic completion receipts and native PID checks drive job completion. Windows removal preserves the existing repository identity, branch and cleanliness safeguards. Cross-platform lifecycle regression tests cover both helpers.
+- **Native E2E suite.** Six real-Tern scenarios cover project selection/cancellation/persistence, worktree creation and session opening, failed setup output, safe removal, dirty-worktree protection and automatic refresh. Windows and macOS use scoped native folder-dialog drivers, isolated daemon/config/repository state, and retained failure diagnostics. All six native scenarios and 14 lifecycle tests passed on Windows with Tern 0.8.3 and Worktrunk 0.80.0; macOS native execution still requires verification on a Mac.
+
 ## 2.0.0 (2026-10-09)
 
 The Projects panel is now one panel per window that follows you, instead of one panel per worktree session.
