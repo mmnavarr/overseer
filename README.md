@@ -49,12 +49,13 @@ The panel stays with you: it sits on the left of whichever tab you're looking at
 
 ## Install
 
-You need macOS and:
+macOS supports the full workflow. Windows supports projects, worktree discovery, native worktree creation/removal, and dedicated sessions.
 
 | | Required for | |
 |---|---|---|
-| [Tern](https://docs.stencil.so/tern/) desktop | everything | tested with 0.6.2 |
-| [Worktrunk](https://worktrunk.dev) (`wt`), Git, Bash | everything | tested with wt 0.40.0 |
+| [Tern](https://docs.stencil.so/tern/) desktop | everything | tested with 0.6.2 on macOS; Windows environment: 0.8.3 |
+| [Worktrunk](https://worktrunk.dev) (`wt` on macOS, `git-wt` on Windows), Git | worktree discovery, creation, deletion | tested with wt 0.40.0 on macOS; Windows environment: git-wt 0.80.0, requiring Git 2.43+ |
+| Bash (included with Git for Windows) | Worktrunk shell hooks; macOS operation/Visualize PR helpers | Windows operations use native Windows PowerShell |
 | [GitHub CLI](https://cli.github.com) (`gh`), signed in | PR badges, Visualize PR | optional |
 | [Linear CLI](https://github.com/schpet/linear-cli) (`linear`), signed in | ticket links | optional |
 | [omp](https://omp.sh) | ticket agents, Visualize PR | optional |
@@ -66,6 +67,24 @@ cd overseer
 ```
 
 Linking reloads the plugin whenever the source changes. Use `tern plugin install "$PWD"` instead if you'd rather have a frozen copy.
+
+On Windows, in PowerShell with `tern` on PATH:
+
+```powershell
+winget install --id Git.Git --exact
+winget install --id max-sixty.worktrunk --exact
+git clone https://github.com/mmnavarr/overseer.git
+cd overseer
+tern plugin install (Get-Location).Path
+```
+
+Update the installed Windows copy after pulling changes with `tern plugin install (Get-Location).Path --force`. An installed copy excludes `.git` and does not watch the source checkout. Development links (`tern plugin link`) can repeatedly reload on Windows Git-pack notifications; use an installed copy for normal Windows use if this occurs. Switching with `tern plugin unlink overseer`, `tern plugin install .`, then `tern plugin reload` leaves the source checkout and saved project/session bindings intact.
+
+On Windows, **+** opens Explorer's native folder dialog, starting beside the last repository added, otherwise `%USERPROFILE%\code` or your profile folder. Select a repository and press **Add project**; Cancel leaves Projects unchanged. Linked checkouts and junctions resolve to the same project. Overseer prefers `git-wt.exe` so Windows Terminal's `wt.exe` alias is never launched.
+
+If Git is older than 2.43, upgrade it before loading worktrees (`winget upgrade --id Git.Git --exact`); close Git Bash sessions first if the installer reports that Git is in use.
+
+Worktree creation and deletion run in a visible terminal on Windows too, with Worktrunk's hook approval prompts intact. Launcher arguments are encoded rather than interpolated into your shell, so paths and branch names containing spaces, Unicode, apostrophes or `$` stay literal. Success closes the operation tab; failure leaves its output available.
 
 ## Use it
 
@@ -164,18 +183,22 @@ When debugging an overrun, add temporary `tern.log.warn(string.format("PROBE …
 | File | What lives there |
 |---|---|
 | `window.luau` | Project registry, model building (`model`), drawing (`draw`/`redraw`), the following panel (`slot`, `pin`, `follow`, `togglePanel`), session binding (`ensureSession`, `openWorktree`), forms swapped into the panel's slot, background jobs (`launchCreation`, `checkJobs`), ticket links (`ticketOf`, `ticketFor`), Linear workspace lookup, Visualize PR canvases, the Carly export, hooks and the 750 ms `tick`. |
-| `worktrunk.luau` | Every external command: `wt list`, validation, the creation and removal command lines, `git` status, `gh pr list`/`gh pr view`/`gh pr diff`, `linear auth whoami`. Commands are argv arrays; `find_executable` checks Homebrew, `/usr/local/bin`, `~/.bun/bin` and `~/.local/bin`. |
+| `worktrunk.luau` | External commands: Worktrunk listing, validation, creation/removal command lines, Git discovery/status, GitHub and Linear queries. Commands are argv arrays; executable lookup handles POSIX PATH and Windows `.exe`/semicolon PATH, Cargo and Winget locations. Successful Worktrunk lookup is reused until plugin reload. |
 | `visualize.luau` | Visualize PR: prompt, read-only omp invocation, output extraction, cache. |
 | `view.luau` | Pure render: model → Tern UI node tree (rows, badges, tab rows, confirmations, menus). |
-| `worktree-operation.sh` | The helper that runs `wt switch --create` / `wt remove` in a visible terminal and writes an atomic completion receipt. |
+| `worktree-operation.sh`, `worktree-operation.ps1` | POSIX and Windows helpers for `wt switch --create` / `wt remove`. Worktrunk inherits the visible terminal and hook approvals; each helper publishes an atomic exit-status receipt and a native PID. The Windows helper rechecks removal identity using physical paths. |
+| `folder-picker.ps1` | Windows Explorer's native folder-selection dialog, launched in STA Windows PowerShell. The start folder is a separate argument; stdout is UTF-8, and cancellation produces no path. |
+| `worktrunk-list.ps1` | Starts Windows Worktrunk outside Tern's UI callback, preserving UTF-8 JSON and the native exit status. This avoids the large executable's launch exceeding the 50 ms hook budget. |
 | `host.luau`, `input.luau` | The native form block and its text input. |
 | `styles.css`, `icons.css` | Panel styles. `icons.css` is **generated** by `icons/generate-css.py` (plugin stylesheets can't load files, so icons are embedded as data URIs). |
 | `skills/visual-pr/` | HumanLayer's visual-pr skill, vendored unchanged (MIT). |
-| `tests/test_worktree_operation.py` | Real Git/Worktrunk tests for the helper. |
+| `tests/test_worktree_operation.py` | Real Git/Worktrunk lifecycle tests; automatically selects the native Windows or POSIX helper. |
+| `tests/test_overseer_e2e.py` | Real native Tern E2E flows: project picker/cancel/restart, create/open, failed setup output, safe removal, dirty-worktree refusal and automatic refresh. |
+| `tests/e2e_picker_windows.ps1`, `tests/e2e_picker_macos.applescript` | Test-only native folder-dialog drivers, restricted to the isolated GUI's picker subprocess. |
 
 ### State
 
-Tern's plugin KV (`~/Library/Application Support/Tern/plugin-data/overseer/kv.json`), via `tern.kv`:
+Tern's plugin KV, via `tern.kv`: `~/Library/Application Support/Tern/plugin-data/overseer/kv.json` on macOS; `%LOCALAPPDATA%\Tern\plugin-data\overseer\kv.json` on Windows. `TERN_CONFIG_DIR` overrides the root on either platform.
 
 | Key | Shape | Notes |
 |---|---|---|
@@ -200,7 +223,7 @@ In-memory only: the per-project `cache` (worktrees, PRs, loading/error flags), `
 - **Overseer closes a session:** `closeManagedSession` switches away and calls `follow` first, so the panel leaves before the session closes.
 - **Tern closes the panel's tab or session:** the panel dies with it. If you wanted it (`panel-open`) and its last tab is gone, `follow` opens a fresh one in the shown tab. If its tab is still there, you closed the panel yourself, and it stays closed until the shortcut.
 
-**Create.** Form or Carly → `wt.validate` → `launchCreation` opens a background tab running `worktree-operation.sh` and records a job → `checkJobs` (on `tick`) reads the receipt → on success: toast, apply the display name by branch (`applyCreatedName`), and for ticket worktrees `startTicketAgent` opens the session and calls `cx.agents:start({command = "omp", prompt = …})`. Creation succeeded means `wt` exited 0, not that every hook succeeded.
+**Create.** Form or Carly → `wt.validate` → `launchCreation` opens a background tab running the platform's `worktree-operation.sh` or `worktree-operation.ps1` helper and records a job → `checkJobs` (on `tick`) reads the receipt → on success: toast, apply the display name by branch (`applyCreatedName`), and for ticket worktrees `startTicketAgent` opens the session and calls `cx.agents:start({command = "omp", prompt = …})`. Creation succeeded means `wt` exited 0, not that every hook succeeded.
 
 **Delete.** Confirmation → `wt.validate_removal` (repository identity, branch, cleanliness) → removal job in a background tab → receipt → close the worktree's session only if the directory is gone, then drop its name, binding and Ice Box entry.
 
@@ -220,6 +243,38 @@ Run the helper's tests (they use temporary repos, config and approvals):
 python3 -B tests/test_worktree_operation.py -v
 bash -n worktree-operation.sh
 ```
+
+On Windows, run `python -B tests/test_worktree_operation.py -v`. Tests require Python, Git and Worktrunk; repositories, config, approvals and hooks are temporary and isolated.
+
+#### Native E2E
+
+Run from the repository root in an **unlocked interactive desktop**, not a headless CI service. Requires Python 3.9+, Git, Worktrunk, and an installed Tern with its native control API. Keep the test windows untouched while the suite runs.
+
+| Platform | E2E only | Complete suite |
+|---|---|---|
+| Windows | `python -B tests/test_overseer_e2e.py -v` | `python -B -m unittest discover -s tests -v` |
+| macOS | `python3 -B tests/test_overseer_e2e.py -v` | `python3 -B -m unittest discover -s tests -v` |
+
+The six E2E tests cover:
+
+- Native folder selection and cancellation, then project persistence after a window restart.
+- Creating a literal Unicode/metacharacter branch with a display name, and opening a session whose real shell is in the new checkout.
+- A generated, explicitly approved failing hook: setup finishes without a hanging job, and its error output remains accessible.
+- Successful deletion updating Projects while preserving the Git branch.
+- Dirty-worktree refusal preserving uncommitted files and the branch.
+- Discovering an externally created worktree through automatic refresh, without clicking Refresh or reloading.
+
+Each test creates temporary repositories, HOME/config/approval directories, a private Tern daemon socket and a native GUI control endpoint. Projects enter through the real picker; Git, Worktrunk, receipts and UI actions are not mocked. The runner declines its own first-run tool-management questions, supplies the local control API's account fixture, and tears down only its own processes. It does not test OAuth login. Windows uses `tern.exe` for the GUI and `tern.com` for CLI control when the console shim is installed.
+
+**Windows permissions:** use the same interactive desktop and integrity level for Tern and the test host. Windows PowerShell, UI Automation and WMI process inspection must be available; the driver refuses unrelated or ambiguous dialogs and leaves unexpected picker warnings for scoped test cleanup.
+
+**macOS permissions:** enable the invoking terminal/test host under **System Settings → Privacy & Security → Accessibility**, restart that host, and allow it to control **System Events** under **Automation**. The AppleScript driver opens Go to Folder and sets its literal AX path value; no Finder automation or clipboard is used. Permission denial is a failure, not a skipped passing test.
+
+`OVERSEER_E2E_TERN` can point to a nonstandard Tern GUI executable (`tern.exe` on Windows, the executable inside `Tern.app` on macOS). Failure diagnostics remain in the OS temporary directory under `overseer-e2e-artifacts/<test>-<id>/`: command/driver output, state, visible tree, menus, system dialogs, KV, logs, and screenshots when the renderer is available. Set `OVERSEER_E2E_ARTIFACTS` to choose another artifact directory.
+
+Run these commands on each platform before treating the native E2E flows as verified; adding the suite does not establish a passing run.
+
+#### Manual smoke testing
 
 Smoke-test UI changes in an **isolated Tern window** so your real sessions are untouched:
 
@@ -248,7 +303,7 @@ Other conventions:
 
 ### Known limitations
 
-- macOS only (folder picker, paths, Tern desktop).
+- Windows Visualize PR still uses a POSIX Bash diff helper and is not supported. Project addition, worktree discovery, creation/removal, and sessions use native Windows paths. Linux has no folder picker yet.
 - Visualize PR fails on PRs whose diff exceeds GitHub's 20,000-line API limit (`gh pr diff` returns HTTP 406). The tab shows the error.
 - The panel moves into each tab you switch to, so every switch animates briefly and resizes the terminals in both tabs (full-screen programs redraw). In a tab split top-and-bottom it sits beside the top half.
 - If the timer hook is ever disabled, clicks and process results stop redrawing the panel until the plugin reloads; tab and focus changes still redraw it.

@@ -5,7 +5,7 @@ local visualize = require("./visualize")
 
 local cache = {}
 local inflight = {}
--- Helper liveness probes: job id -> true while `kill -0` runs; dead[id] once it failed.
+-- Helper liveness probes: job id -> true while a native PID check runs; dead[id] after exit.
 local probing, dead = {}, {}
 local rendered = {}
 local collapsed = {}
@@ -891,7 +891,7 @@ local CHOOSE_FOLDER = {
 local function pickerStart()
 	local last = tern.kv.get("picker-start")
 	if type(last) == "string" and tern.fs.exists(last) then return last end
-	local home = tern.getenv("HOME") or "/"
+	local home = (if tern.runtime.os == "windows" then tern.getenv("USERPROFILE") else tern.getenv("HOME")) or "/"
 	if tern.fs.exists(home .. "/code") then return home .. "/code" end
 	return home
 end
@@ -927,13 +927,19 @@ local function addPicked(cx, path)
 		local all = projects()
 		table.insert(all, project)
 		tern.kv.set("projects", all)
-		tern.kv.set("picker-start", string.match(project.path, "^(.*)/[^/]+$") or project.path)
-		nextCx:toast("info", "Project added", notificationLabel(project.name))
-		navigator(nextCx)
+		-- Registration and panel discovery must not share Tern's 50 ms process hook.
+		tern.timer(0, function(addedCx)
+			if not addedCx then return end
+			tern.kv.set("picker-start", string.match(project.path, "^(.*)/[^/]+$") or project.path)
+			addedCx:toast("info", "Project added", notificationLabel(project.name))
+			tern.timer(0, function(panelCx)
+				if panelCx then navigator(panelCx) end
+			end)
+		end)
 	end)
 end
 
--- Opens macOS's folder picker; choosing a Git repository adds it right away.
+-- Opens the platform's native folder picker; a repository is added right away.
 function pickProject(cx)
 	if not requireLocal(cx) then return end
 	if picking then
@@ -941,14 +947,26 @@ function pickProject(cx)
 		return
 	end
 	picking = true
-	local argv = { "/usr/bin/osascript" }
-	for _, line in CHOOSE_FOLDER do
-		table.insert(argv, "-e")
-		table.insert(argv, line)
+	local argv
+	if tern.runtime.os == "windows" then
+		argv = {
+			"powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-STA",
+			"-ExecutionPolicy", "Bypass", "-File", tern.plugin.dir .. "/folder-picker.ps1", pickerStart(),
+		}
+	elseif tern.runtime.os == "macos" then
+		argv = { "/usr/bin/osascript" }
+		for _, line in CHOOSE_FOLDER do
+			table.insert(argv, "-e")
+			table.insert(argv, line)
+		end
+		table.insert(argv, pickerStart())
+	else
+		picking = false
+		report(cx, "Adding projects requires macOS or Windows.", "Folder picker unavailable")
+		return
 	end
-	table.insert(argv, pickerStart())
 	-- The picker waits for the user; give up after 30 minutes untouched.
-	tern.process.run(argv, { timeout_ms = 30 * 60 * 1000 }, function(result, nextCx)
+	local ok, err = pcall(tern.process.run, argv, { timeout_ms = 30 * 60 * 1000 }, function(result, nextCx)
 		picking = false
 		if not nextCx then return end
 		if result.status ~= 0 then
@@ -958,10 +976,15 @@ function pickProject(cx)
 			report(nextCx, "Couldn't open the folder picker: " .. ((result.stderr or ""):match("^%s*(.-)%s*$")), "Folder picker failed")
 			return
 		end
-		local path = (result.stdout or ""):match("^%s*(.-)%s*$")
-		if #path > 1 then path = path:gsub("/+$", "") end
+		-- Preserve whitespace in folder names; cancel on Windows produces no output.
+		local path = (result.stdout or ""):gsub("\r?\n$", "")
+		if path == "" then return end
 		addPicked(nextCx, path)
 	end)
+	if not ok then
+		picking = false
+		report(cx, "Couldn't open the folder picker: " .. tostring(err), "Folder picker failed")
+	end
 end
 
 -- Display names are single-line labels for the Projects panel; blank means
@@ -1194,7 +1217,11 @@ local function helperFailed(id, job)
 	local pid = tonumber(tern.fs.read(pidFile))
 	if not pid then return true end
 	probing[id] = true
-	tern.process.run({ "/bin/kill", "-0", tostring(pid) }, { timeout_ms = 5000 }, function(result)
+	local argv = if tern.runtime.os == "windows" then {
+		"powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
+		"if (Get-Process -Id " .. tostring(pid) .. " -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }",
+	} else { "/bin/kill", "-0", tostring(pid) }
+	tern.process.run(argv, { timeout_ms = 5000 }, function(result)
 		probing[id] = nil
 		if result and result.status ~= 0 then dead[id] = true end
 	end)
