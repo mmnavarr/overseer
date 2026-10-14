@@ -269,7 +269,7 @@ When debugging an overrun, read the log: `exceeded its budget; paused … hook="
 
 ### State
 
-Tern's plugin KV (`~/Library/Application Support/Tern/plugin-data/overseer/kv.json`), via `tern.kv`:
+Tern's plugin KV, via `tern.kv`: `~/Library/Application Support/Tern/plugin-data/overseer/kv.json` on macOS; `%LOCALAPPDATA%\Tern\plugin-data\overseer\kv.json` on Windows. `TERN_CONFIG_DIR` overrides the root on either platform.
 
 | Key | Shape | Notes |
 |---|---|---|
@@ -377,7 +377,7 @@ Other conventions:
 
 ### Known limitations
 
-- macOS only (folder picker, paths, Tern desktop).
+- Windows Visualize PR still uses a POSIX Bash diff helper and is not supported. Project addition, worktree discovery, creation/removal, and sessions use native Windows paths. Linux has no folder picker yet.
 - Visualize PR fails on PRs whose diff exceeds GitHub's 20,000-line API limit (`gh pr diff` returns HTTP 406). The tab shows the error.
 - The panel moves into each tab you switch to, so every switch animates briefly and resizes the terminals in both tabs (full-screen programs redraw). In a tab split top-and-bottom it sits beside the top half.
 - A plugin reload during a Visualize PR run, including the one Tern does when you edit a file in a linked plugin, ends the run and leaves its tab on the waiting message. Run it again.
