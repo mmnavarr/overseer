@@ -2526,11 +2526,18 @@ tern.on("canvas_action", function(ev, _cx)
 	return true
 end)
 
+-- ⌘T in a worktree's session opens the tab in the worktree, running what a
+-- built-in new tab runs: the agent command when Settings › New tabs and splits
+-- open is Agent, else the login shell.
 tern.override("new_tab", function(cx)
 	if not localHost(cx) then return false end
 	local _, worktree = activeWorktree(cx)
 	if not worktree then return false end
-	cx.layout:new_tab({ cwd = worktree.path })
+	local launch: { cwd: string, command: string? } = { cwd = worktree.path }
+	if string.lower(tostring(cx.settings:get("new_blocks"))) == "agent" then
+		launch.command = cx.settings:get("agent_command")
+	end
+	cx.layout:new_tab(launch)
 	return true
 end)
 
