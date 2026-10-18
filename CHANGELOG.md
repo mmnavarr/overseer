@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.3.2 (2026-11-06)
+
+- **⌘T in a worktree's session follows Settings › New tabs and splits open.** With Agent chosen, the new tab runs your agent command in the worktree, as ⌘T does everywhere else; before, it always opened a shell.
+
 ## 2.3.1 (2026-11-05)
 
 - **Worktree creations and deletions no longer get stuck.** Overseer's 750 ms tick, which notices a finished creation or deletion, could stop for an hour without any error, leaving rows on **creating** or **deleting** long after Worktrunk was done. Overseer now restarts the tick whenever it's more than 5 s late, checked from every click, tab, focus and agent event and from a second clock that doesn't depend on Tern's timers. Each restart is recorded in the operation log (`tick restarted`).
