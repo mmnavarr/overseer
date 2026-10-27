@@ -1,9 +1,10 @@
 -- Read-only discovery uses argv subprocesses; creation and removal run in a terminal.
+local budget = require("./budget")
 local M = {}
 local TIMEOUT_MS = 15000
 
 local function deferred_error(done, message)
-	tern.timer(0, function(cx)
+	budget.later("worktrunk error", 0, function(cx)
 		done(nil, message, cx)
 	end)
 end
@@ -12,10 +13,12 @@ end
 -- ends, or fn(nil, cx, err) when it can't start. Starting a process can stall
 -- for tens of milliseconds while Tern is busy (for example, a terminal
 -- printing a dependency install), and Tern disables a plugin hook after one
--- 50 ms overrun, so no callback ever starts more than one process.
+-- 50 ms overrun, so no callback ever starts more than one process. The result
+-- arrives in a timer callback too (see budget.process).
 function M.spawn(argv, options, fn)
-	tern.timer(0, function(cx)
-		local ok, err = pcall(tern.process.run, argv, options, fn)
+	local label = argv[1]:match("([^/]+)$") or argv[1]
+	budget.later("start " .. label, 0, function(cx)
+		local ok, err = pcall(budget.process, label .. " result", argv, options, fn)
 		if not ok then fn(nil, cx, tostring(err)) end
 	end)
 end

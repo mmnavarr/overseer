@@ -2,6 +2,7 @@
 local wt = require("./worktrunk")
 local view = require("./view")
 local visualize = require("./visualize")
+local budget = require("./budget")
 
 local cache = {}
 local inflight = {}
@@ -311,15 +312,25 @@ local function draw(cx)
 	rendered[pane] = signature
 end
 
--- Asks for a draw soon, in a timer callback of its own. Tern gives each hook
--- callback 50 ms and disables the hook for the rest of the session after one
--- overrun, so clicks and process results never draw inline; requests made
--- before the draw runs share it.
+-- Runs fn(cx) in a timer callback of its own, reporting (not raising) errors.
+-- Tern gives every callback its own 50 ms budget and switches a hook off after
+-- one overrun (see budget.luau), so hooks other than timers only queue work
+-- here, and no single callback carries a whole sequence.
+local function separately(label, fn)
+	budget.later(label, 0, function(cx)
+		if not cx then return end
+		local ok, err = pcall(fn, cx)
+		if not ok and problem ~= tostring(err) then report(cx, err) end
+	end)
+end
+
+-- Asks for a draw soon, in a callback of its own; requests made before the
+-- draw runs share it.
 local drawQueued = false
 local function redraw(_cx)
 	if drawQueued then return end
 	drawQueued = true
-	tern.timer(0, function(cx)
+	budget.later("draw", 0, function(cx)
 		drawQueued = false
 		if not cx then return end
 		local ok, err = pcall(draw, cx)
@@ -412,7 +423,7 @@ local function refreshByHand(cx)
 			if stopCx then redraw(stopCx) end
 		end
 		local left = started + SPIN_MIN_MS - tern.now()
-		if left > 0 then tern.timer(left, stop) else stop(doneCx) end
+		if left > 0 then budget.later("refresh spinner", left, stop) else stop(doneCx) end
 	end)
 end
 
@@ -825,7 +836,7 @@ local function openForm(cx, mode, project, worktree)
 	if not current then
 		-- Opening the panel and swapping it in one callback risks Tern's 50 ms budget.
 		if not navigator(cx) then return end
-		tern.timer(0, function(nextCx)
+		budget.later("open form", 0, function(nextCx)
 			if nextCx and slot(nextCx) then openForm(nextCx, mode, project, worktree) end
 		end)
 		return
@@ -862,21 +873,25 @@ local function rejectForm(cx, pane, err)
 	end
 end
 
+-- Puts the Projects panel back in the form's place. The form's record goes
+-- last: if Tern cuts this callback short, the next form check (or the one
+-- after the self-reload, see budget.luau) finds the record and finishes again.
 local function finishForm(cx, pane)
-	inflight[pane] = nil
-	tern.kv.set("pending-form:" .. tostring(pane), nil)
-	if not cx.session:pane(pane) then return end
-	local data = model(cx)
-	local navigatorPane = swapSlot(cx, pane, function()
-		return cx.canvas:open({
-			title = NAVIGATOR.title, about = NAVIGATOR.about, view = view.render(data), how = "beside",
-		})
-	end)
-	if navigatorPane then
-		rendered[navigatorPane] = tern.json.encode(data)
-	else
-		cx.layout:close(pane)
+	if cx.session:pane(pane) then
+		local data = model(cx)
+		local navigatorPane = swapSlot(cx, pane, function()
+			return cx.canvas:open({
+				title = NAVIGATOR.title, about = NAVIGATOR.about, view = view.render(data), how = "beside",
+			})
+		end)
+		if navigatorPane then
+			rendered[navigatorPane] = tern.json.encode(data)
+		else
+			cx.layout:close(pane)
+		end
 	end
+	tern.kv.set("pending-form:" .. tostring(pane), nil)
+	inflight[pane] = nil
 end
 
 -- AppleScript for macOS's native folder picker; the start folder arrives as an
@@ -1011,7 +1026,10 @@ local function createWorktree(cx, pane, request, response)
 		if not ok then rejectForm(nextCx, pane, err); return end
 		local launchError = launchCreation(nextCx, project, { branch = response.branch, displayName = displayName })
 		if launchError then rejectForm(nextCx, pane, launchError); return end
-		finishForm(nextCx, pane)
+		-- Never launched twice: finishing again after a cut-short callback skips this.
+		request.launched = true
+		tern.kv.set("pending-form:" .. tostring(pane), request)
+		separately("finish form", function(finishCx) finishForm(finishCx, pane) end)
 		nextCx:toast("info", "Creating worktree", notificationLabel(displayName or response.branch))
 		redraw(nextCx)
 	end)
@@ -1128,32 +1146,43 @@ local function startTicketAgent(job)
 	end)
 end
 
+-- Acts on one form's response, in a callback of its own.
+local function answerForm(cx, pane, request, response)
+	if response.cancelled or request.launched then
+		finishForm(cx, pane)
+	elseif request.mode == "create" and response.mode == "create" then
+		createWorktree(cx, pane, request, response)
+	elseif request.mode == "rename" and response.mode == "rename" then
+		renameWorktree(cx, pane, request, response)
+	elseif request.mode == "base" and response.mode == "base" then
+		changeBase(cx, pane, request, response)
+	elseif request.mode == "linear" and response.mode == "linear" then
+		changeLinear(cx, pane, request, response)
+	else
+		rejectForm(cx, pane, "Invalid form response. Please try again.")
+	end
+end
+
 local function forms(cx)
-	for _, pane in cx.session:panes() do
-		if pane.block == "overseer.form" and not inflight[pane.pane] then
-			local request = tern.kv.get("pending-form:" .. tostring(pane.pane))
-			if request then
+	for _, info in cx.session:panes() do
+		local pane = info.pane
+		if info.block == "overseer.form" and not inflight[pane] then
+			local request = tern.kv.get("pending-form:" .. tostring(pane))
+			if not request then
+				-- A form without its record: Tern cut short the callback that opened
+				-- it. It can never answer, so put Projects back.
+				inflight[pane] = true
+				separately("restore Projects", function(nextCx) finishForm(nextCx, pane) end)
+			else
 				local response = request.response or tern.kv.get("form:" .. request.token)
 				if response then
 					-- Keep validation inputs until completion so a plugin reload can
 					-- resume an in-flight request without leaving a submitted form stuck.
 					request.response = response
-					tern.kv.set("pending-form:" .. tostring(pane.pane), request)
+					tern.kv.set("pending-form:" .. tostring(pane), request)
 					tern.kv.set("form:" .. request.token, nil)
-					inflight[pane.pane] = true
-					if response.cancelled then
-						finishForm(cx, pane.pane)
-					elseif request.mode == "create" and response.mode == "create" then
-						createWorktree(cx, pane.pane, request, response)
-					elseif request.mode == "rename" and response.mode == "rename" then
-						renameWorktree(cx, pane.pane, request, response)
-					elseif request.mode == "base" and response.mode == "base" then
-						changeBase(cx, pane.pane, request, response)
-					elseif request.mode == "linear" and response.mode == "linear" then
-						changeLinear(cx, pane.pane, request, response)
-					else
-						rejectForm(cx, pane.pane, "Invalid form response. Please try again.")
-					end
+					inflight[pane] = true
+					separately("answer form", function(nextCx) answerForm(nextCx, pane, request, response) end)
 				end
 			end
 		end
@@ -1176,9 +1205,9 @@ watchForms = function()
 		if not open then watching = false; return end
 		local ok, err = pcall(forms, cx)
 		if not ok then tern.log.warn("Overseer form check failed: " .. tostring(err)) end
-		tern.timer(100, step)
+		budget.later("form check", 100, step)
 	end
-	tern.timer(100, step)
+	budget.later("form check", 100, step)
 end
 
 -- The helper's receipt is the only authority on an operation's outcome. A
@@ -1203,76 +1232,92 @@ local function helperFailed(id, job)
 	return false
 end
 
+-- What a finished job leaves to do: close its output tab, update names and
+-- sessions, and tell you. Runs in a callback of its own once the job is off
+-- the books, so a callback Tern cuts short never repeats or misreports a job.
+local function jobFinished(cx, job, status)
+	-- On success the output tab has served its purpose: close it (its helper is
+	-- only waiting for Enter). Failures keep it open with the error on screen,
+	-- including a deletion that reported success but left its directory.
+	local succeeded = status == 0 and (job.kind ~= "remove" or not tern.fs.exists(job.path))
+	if succeeded and cx.session:pane(job.pane) then cx.layout:close(job.pane) end
+	if job.kind == "remove" then
+		if succeeded then
+			local names = records("worktree-names")
+			if names[job.project] then
+				names[job.project][job.path] = nil
+				tern.kv.set("worktree-names", names)
+			end
+			local icebox = records("icebox")
+			if icebox[job.project] then
+				icebox[job.project][job.path] = nil
+				tern.kv.set("icebox", icebox)
+			end
+			local closed, closeError = true, nil
+			if job.session then closed, closeError = closeManagedSession(cx, job.path, job.session) end
+			if closed then
+				cx:toast("info", "Worktree deleted", notificationLabel(job.label))
+			else
+				tern.log.warn("Worktree deleted, but its session was left open: " .. tostring(closeError))
+				cx:toast("error", "Worktree deleted", "Session still open. Check Tern’s log.")
+			end
+		else
+			cx:toast("error", "Worktree deletion failed", "Check the Delete tab. Session kept.")
+		end
+	else
+		-- Applied on failure too: a partially created worktree keeps its label.
+		applyCreatedName(job)
+		local label = job.displayName or job.branch
+		if status == 0 then
+			cx:toast("info", "Worktree created", notificationLabel(label))
+			startTicketAgent(job)
+		else
+			cx:toast("error", "Worktree creation failed", "Check the Create tab for details.")
+		end
+	end
+end
+
 local function checkJobs(cx)
 	local jobs = records("jobs")
-	local changed = false
+	local finished = {}
 	for id, job in jobs do
 		local status
 		if tern.fs.exists(job.receipt) then
-			status = tonumber(tern.fs.read(job.receipt))
-			if status == nil then status = -1 end
-			tern.fs.remove(job.receipt)
+			status = tonumber(tern.fs.read(job.receipt)) or -1
 		else
 			local pane = cx.session:pane(job.pane)
 			if (not pane or pane.exited ~= nil or pane.error) and helperFailed(id, job) then status = -1 end
 		end
-		-- On success the output tab has served its purpose: close it (its helper is
-		-- only waiting for Enter). Failures keep it open with the error on screen,
-		-- including a deletion that reported success but left its directory.
-		local succeeded = status == 0 and (job.kind ~= "remove" or not tern.fs.exists(job.path))
-		if succeeded and cx.session:pane(job.pane) then cx.layout:close(job.pane) end
-		if status ~= nil then
-			jobs[id], changed = nil, true
-			probing[id], dead[id] = nil, nil
-			if tern.fs.exists(job.receipt .. ".pid") then tern.fs.remove(job.receipt .. ".pid") end
-			if job.kind == "remove" then
-				if status == 0 and not tern.fs.exists(job.path) then
-					local names = records("worktree-names")
-					if names[job.project] then
-						names[job.project][job.path] = nil
-						tern.kv.set("worktree-names", names)
-					end
-					local icebox = records("icebox")
-					if icebox[job.project] then
-						icebox[job.project][job.path] = nil
-						tern.kv.set("icebox", icebox)
-					end
-					local closed, closeError = true, nil
-					if job.session then closed, closeError = closeManagedSession(cx, job.path, job.session) end
-					if closed then
-						cx:toast("info", "Worktree deleted", notificationLabel(job.label))
-					else
-						tern.log.warn("Worktree deleted, but its session was left open: " .. tostring(closeError))
-						cx:toast("error", "Worktree deleted", "Session still open. Check Tern’s log.")
-					end
-				else
-					cx:toast("error", "Worktree deletion failed", "Check the Delete tab. Session kept.")
-				end
-			else
-				-- Applied on failure too: a partially created worktree keeps its label.
-				applyCreatedName(job)
-				local label = job.displayName or job.branch
-				if status == 0 then
-					cx:toast("info", "Worktree created", notificationLabel(label))
-					startTicketAgent(job)
-				else
-					cx:toast("error", "Worktree creation failed", "Check the Create tab for details.")
-				end
-			end
+		if status ~= nil then finished[id] = { job = job, status = status } end
+	end
+	if next(finished) == nil then return end
+	-- Off the books before the receipts go: a callback cut short in between
+	-- leaves a stray receipt, never a job without one (which reads as failed).
+	for id in finished do jobs[id] = nil end
+	tern.kv.set("jobs", jobs)
+	for id, done in finished do
+		probing[id], dead[id] = nil, nil
+		for _, file in { done.job.receipt, done.job.receipt .. ".pid" } do
+			if tern.fs.exists(file) then tern.fs.remove(file) end
 		end
+		separately("finish job", function(nextCx) jobFinished(nextCx, done.job, done.status) end)
 	end
-	if changed then
-		tern.kv.set("jobs", jobs)
-		refresh(cx)
-	end
+	refresh(cx)
 end
 
-tern.command({ id = "projects", title = "Show or hide Projects", icon = "branch", keys = { "cmd+alt+shift+p" }, run = togglePanel })
-tern.command({ id = "add", title = "Add project", icon = "folder", run = function(cx) pickProject(cx) end })
-tern.command({ id = "create", title = "Create worktree", icon = "branch", run = function(cx)
+-- Commands, like clicks, only queue their work.
+local function command(id, title, icon, keys, run)
+	tern.command({ id = id, title = title, icon = icon, keys = keys, run = function(cx)
+		budget.checkTimers(cx)
+		separately("command " .. id, run)
+	end })
+end
+command("projects", "Show or hide Projects", "branch", { "cmd+alt+shift+p" }, togglePanel)
+command("add", "Add project", "folder", nil, pickProject)
+command("create", "Create worktree", "branch", nil, function(cx)
 	local project = activeWorktree(cx)
 	if project then openForm(cx, "create", project) else navigator(cx); cx:toast("info", "Choose a project", "Click + beside a project's name.") end
-end })
+end)
 
 local TICKET_PROMPT = "Please read ticket %s to understand your task and ask any questions you have before we start"
 
@@ -1334,12 +1379,12 @@ tern.carly.context(function()
 	return "Overseer creates Linear-ticket worktrees with ticket_worktree. " .. projectNames()
 end)
 
-tern.on("canvas_action", function(ev, cx)
+local function canvasAction(ev, cx)
 	if ev.act == "help" then
 		cx.docs:open(tern.plugin.dir .. "/README.md", { how = "tab" })
-		return true
+		return
 	end
-	if not requireLocal(cx) then return true end
+	if not requireLocal(cx) then return end
 	if ev.act == "add" then pickProject(cx)
 	elseif ev.act == "refresh" then
 		refreshByHand(cx)
@@ -1351,7 +1396,7 @@ tern.on("canvas_action", function(ev, cx)
 	elseif ev.act == "Add to Ice Box" or ev.act == "Remove from Ice Box" then
 		-- Menu entries show their action verbatim, so these read as titled.
 		local project, worktree = findWorktree(view.worktreePath(ev.node))
-		if not project then report(cx, "Worktree not found. Refresh Projects."); return true end
+		if not project then report(cx, "Worktree not found. Refresh Projects."); return end
 		local icebox = records("icebox")
 		icebox[project.id] = icebox[project.id] or {}
 		icebox[project.id][worktree.path] = if ev.act == "Add to Ice Box" then true else nil
@@ -1380,11 +1425,28 @@ tern.on("canvas_action", function(ev, cx)
 	elseif ev.act == "tab" then
 		local pane = tonumber(ev.value)
 		if pane and cx.session:pane(pane) then cx.layout:focus(pane) end
-	else return false end
+	end
+end
+
+local CANVAS_ACTIONS = {}
+for _, act in {
+	"help", "add", "refresh", "collapse", "create", "open", "Add to Ice Box", "Remove from Ice Box",
+	"toggle-icebox", "Change base branch", "Set Linear workspace", "Visualize PR", "Rename",
+	"Close session", "Delete worktree", "confirm", "cancel", "tab",
+} do CANVAS_ACTIONS[act] = true end
+
+-- Clicks only queue their work. Nothing notices a switched-off canvas_action
+-- hook (every click would answer `Nothing handles "…" here`), so this hook
+-- must stay too small to overrun.
+tern.on("canvas_action", function(ev, cx)
+	budget.checkTimers(cx)
+	if not CANVAS_ACTIONS[ev.act] then return false end
+	separately("click " .. ev.act, function(nextCx) canvasAction(ev, nextCx) end)
 	return true
 end)
 
 tern.override("new_tab", function(cx)
+	budget.checkTimers(cx)
 	if not localHost(cx) then return false end
 	local _, worktree = activeWorktree(cx)
 	if not worktree then return false end
@@ -1396,57 +1458,54 @@ tern.chrome.status(function()
 	return { { text = "Projects", icon = "branch", command = "plugin.overseer.projects" } }
 end)
 
--- Runs fn in a timer callback of its own, reporting (not raising) errors.
--- Tern gives every callback its own 50 ms budget and disables a plugin's timers
--- after an overrun, so no single callback should carry all of a tick's work.
-local function separately(fn)
-	tern.timer(0, function(cx)
+-- Moves the panel into the shown tab and draws it, in a callback of its own;
+-- changes made before it runs share it.
+local followQueued = false
+local function followSoon()
+	if followQueued then return end
+	followQueued = true
+	budget.later("follow", 0, function(cx)
+		followQueued = false
 		if not cx then return end
-		local ok, err = pcall(fn, cx)
-		if not ok then
-			local text = tostring(err)
-			if problem ~= text then report(cx, text) end
-		end
+		local ok, err = pcall(follow, cx)
+		if not ok then tern.log.warn("Projects panel: " .. tostring(err)) end
+		redraw(cx)
 	end)
 end
 
+-- Each piece of a tick runs in a callback of its own. The next tick is
+-- queued first, so an error can't stop the ticks.
 local function tick(cx)
-	local ok, err = pcall(function()
-		if not localHost(cx) then return end
-		forms(cx)
-		-- Resumes fast form checks after a plugin reload left a form open.
-		watchForms()
-		checkJobs(cx)
-		if tern.now() - lastRefresh >= 15000 and #cx.canvas:list() > 0 then
-			lastRefresh = tern.now()
-			separately(refresh)
-		end
-		follow(cx)
-		redraw(cx)
-	end)
-	if not ok then
-		local text = tostring(err)
-		if problem ~= text then report(cx, text) end
+	budget.later("tick", 750, tick)
+	if not cx or not localHost(cx) then return end
+	budget.checkProcesses(cx)
+	separately("form check", forms)
+	-- Resumes fast form checks after a plugin reload left a form open.
+	watchForms()
+	separately("job check", checkJobs)
+	if tern.now() - lastRefresh >= 15000 and #cx.canvas:list() > 0 then
+		lastRefresh = tern.now()
+		separately("refresh", refresh)
 	end
-	tern.timer(750, tick)
+	followSoon()
 end
 
 tern.on("window_start", function(cx)
-	refresh(cx)
-	follow(cx)
+	budget.checkTimers(cx)
+	separately("refresh", refresh)
+	followSoon()
 end)
--- Every tab, pane and focus change moves the panel into the shown tab and
--- draws it; any one of these hooks keeps it following if another is disabled.
-local function followAndDraw(cx, tab)
-	local ok, err = pcall(function()
-		follow(cx, tab)
-		draw(cx)
+-- Every tab, pane and focus change moves the panel into the shown tab.
+for _, name in { "focus", "tab_created", "tab_closed", "pane_created", "pane_closed" } do
+	tern.on(name, function(_ev, cx)
+		budget.checkTimers(cx)
+		followSoon()
 	end)
-	if not ok then tern.log.warn("Projects panel: " .. tostring(err)) end
 end
-tern.on("focus", function(ev, cx) followAndDraw(cx, ev.tab) end)
-for _, name in { "tab_created", "tab_closed", "pane_created", "pane_closed" } do
-	tern.on(name, function(_ev, cx) followAndDraw(cx) end)
+-- Busy terminals and agents report these all the time: frequent, cheap
+-- chances to notice a switched-off timer hook while nobody touches Tern.
+for _, name in { "title", "command_finished", "agent_finished" } do
+	tern.on(name, function(_ev, cx) budget.checkTimers(cx) end)
 end
 -- Timers are restarted on reload; window_start intentionally is not.
-tern.timer(750, tick)
+budget.later("tick", 750, tick)

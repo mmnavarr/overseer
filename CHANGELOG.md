@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.1.0 (2026-10-27)
+
+- **Overseer recovers on its own when Tern switches part of it off.** Tern turns off any part of a plugin whose callback runs past 50 ms, until the plugin reloads, and a busy Tern makes that happen several times a day however little the callback does. Projects then stopped refreshing, forms stayed on "Returning to Projects…" or "Working…", and finished worktrees went unnoticed until you reloaded the plugin. Overseer now notices when its timers or process results have stopped and reloads itself (at most every 30 seconds), logging which callback was cut short. Clicks, commands and tab changes now only queue their work, so the click handler, which Overseer can't watch, stays too small to overrun.
+- **Fixed:** a form could stay on "Returning to Projects…" or "Working…" forever when the step that opened or finished it was cut short. A form that can no longer answer now puts Projects back, a finished form keeps its record until Projects is back, and a new worktree is never launched twice when its form finishes again after a reload.
+- **Fixed:** a finished worktree job cut short at the wrong moment could be reported as failed. A job now leaves the job list before its receipt is deleted.
+- Callbacks that take 30 ms or more are logged (`Overseer: <step> took N ms of its 50 ms budget`).
+
 ## 2.0.1 (2026-10-13)
 
 - **Fixed:** Projects could freeze (stop refreshing, never finish a new worktree) or answer every click with `Nothing handles "…" here` until the plugin reloaded. While Tern was busy, such as during a worktree's dependency install, starting the background commands for a refresh could take longer than the 50 ms Tern allows a plugin callback, and Tern then switched that part of Overseer off. Each command now starts in a callback of its own.

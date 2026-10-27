@@ -148,23 +148,27 @@ Tern APIs are typed in the definitions Tern generates: `/Applications/Tern.app/C
 
 ### The 50 ms rule (read this first)
 
-Tern gives **every plugin callback 50 ms**. A single overrun disables that hook (`canvas_action`, `timer`, `process`, …) **until the plugin reloads**, and the only trace is a line in `~/Library/Logs/Tern/tern.log`. A disabled `canvas_action` makes every click in the panel answer `Nothing handles "open" here`.
+Tern gives **every plugin callback 50 ms**. A single overrun disables that hook (`canvas_action`, `timer`, `process`, …) **until the plugin reloads**, and the only trace is a line in `~/Library/Logs/Tern/tern.log`. The overrun can't be caught (`pcall` doesn't help; the callback just stops, and its `tern.kv` writes can be lost), and it can't be prevented either: while Tern is busy, a callback doing almost nothing still overruns when Tern stalls inside one of its calls. A full draw takes under 10 ms.
 
-Consequences, enforced throughout `window.luau`:
+So Overseer survives overruns instead of trying to avoid them. `budget.luau` owns this:
 
-- **Never draw inline from clicks or process results.** Call `redraw(cx)`. It queues one coalesced `draw` in its own `tern.timer(0)` callback. Tab, pane and focus events are the exception: they move and draw the panel directly (see below), so a disabled timer hook can't freeze it.
-- There is **one panel per window**, so a draw costs the same however many sessions are open. (When every session had its own panel, one click cost 40 ms with eight sessions.)
-- Split expensive sequences across callbacks. `openForm` opens the panel first and swaps the form in on the next tick. `separately(fn)` runs `fn` in its own callback with errors reported.
-- **Start processes only through `wt.spawn`.** Starting a process can stall for tens of milliseconds while Tern is busy, for example while a terminal prints a dependency install. `wt.spawn` starts each one in a timer callback of its own, so a refresh of several projects never starts them all in one callback. Never call `tern.process.run` directly.
-- Process results (`tern.process.run` callbacks) must stay small too. They update state and call `redraw`.
+- **Work runs in timer callbacks; every other hook only queues it.** Clicks (`canvas_action`), commands, and tab, pane and focus events call `separately(label, fn)` or `followSoon()`, and return. `budget.later(label, ms, fn)` is the only way to start a timer: it labels the callback and logs any that take 30 ms or more (`Overseer: <label> took N ms of its 50 ms budget`).
+- **Overseer reloads itself when the `timer` or `process` hook dies.** Every other hook (`focus`, tab and pane events, `title`, `command_finished`, `agent_finished`, clicks, commands, process results) calls `budget.checkTimers`. When no timer callback has run for 5 s, it plants a probe timer, and if that hasn't fired a second later, the timer hook is off. The tick calls `budget.checkProcesses`, which treats a process unreported 10 s past its own timeout (counted in ticks, since an idle window runs none) as a dead `process` hook. Either one runs `tern plugin reload` (at most every 30 s) and logs `Overseer is reloading itself: …`, naming the callback that was cut short. The CLI matters: it reloads through the session daemon, which hands the Projects panel to the reloaded plugin, while the window's `reload_plugins` action leaves an ownerless, empty `Canvas` pane behind. The action is used only when the CLI isn't found.
+- **A disabled `canvas_action` can't be noticed** (every click answers `Nothing handles "open" here` and nothing reaches Overseer), which is why that hook does nothing but queue.
+- **Make every step safe to cut short.** A callback that's cut short leaves its in-memory state behind and can lose its kv writes, then the reload starts from kv. So write the record that says "done" last: `finishForm` drops a form's `pending-form` record only after the panel is back, a creation records `launched` on the form before finishing it, and `checkJobs` takes a job off the books before deleting its receipt. A form found without its record can never answer, so `forms` puts Projects back in its place.
+- There is **one panel per window**, so a draw costs the same however many sessions are open.
+- **Start processes only through `wt.spawn`.** Starting a process can stall for tens of milliseconds while Tern is busy, so `wt.spawn` starts each one in a timer callback of its own, and `budget.process` hands its result to the caller in another, so the `process` hook itself never does work. Never call `tern.process.run` directly.
 
-When debugging an overrun, add temporary `tern.log.warn(string.format("PROBE …=%.1f", tern.now() - t0))` timings, reproduce in an isolated window (below), and remove them afterwards. A probe only logs once its step finishes, so to find a step that overruns, also log a marker *before* each step: the last marker before `exceeded its budget` names it. Several terminals running `yes` make a busy Tern that reproduces overruns within minutes.
+Tern doesn't run plugin timers while its window sits idle with no events; the next event runs every overdue timer. An isolated test window behind other windows therefore looks frozen until you click it.
+
+When debugging an overrun, read the log: `exceeded its budget … hook="timer"` is followed by Overseer's reload line naming the callback that was cut short, and `took N ms` lines show which callbacks run close to the limit. To reproduce, use an isolated window (below); several terminals running `yes` make a busy Tern that overruns within minutes.
 
 ### Files
 
 | File | What lives there |
 |---|---|
-| `window.luau` | Project registry, model building (`model`), drawing (`draw`/`redraw`), the following panel (`slot`, `pin`, `follow`, `togglePanel`), session binding (`ensureSession`, `openWorktree`), forms swapped into the panel's slot, background jobs (`launchCreation`, `checkJobs`), ticket links (`ticketOf`, `ticketFor`), Linear workspace lookup, Visualize PR canvases, the Carly export, hooks and the 750 ms `tick`. |
+| `window.luau` | Project registry, model building (`model`), drawing (`draw`/`redraw`), the following panel (`slot`, `pin`, `follow`, `followSoon`, `togglePanel`), session binding (`ensureSession`, `openWorktree`), forms swapped into the panel's slot (`openForm`, `forms`, `answerForm`, `finishForm`), background jobs (`launchCreation`, `checkJobs`, `jobFinished`), ticket links (`ticketOf`, `ticketFor`), Linear workspace lookup, Visualize PR canvases, the Carly export, hooks and the 750 ms `tick`. |
+| `budget.luau` | Living with the 50 ms rule: `later` (labelled timer callbacks, slow-callback log), `process` (process results handed to a timer callback), and the self-reload watchdog (`checkTimers`, `checkProcesses`). |
 | `worktrunk.luau` | Every external command: `wt list`, validation, the creation and removal command lines, `git` status, `gh pr list`/`gh pr view`/`gh pr diff`, `linear auth whoami`. Commands are argv arrays started by `spawn`, one per timer callback (see the 50 ms rule); `find_executable` checks Homebrew, `/usr/local/bin`, `~/.bun/bin` and `~/.local/bin`. |
 | `visualize.luau` | Visualize PR: prompt, read-only omp invocation, output extraction, cache. |
 | `view.luau` | Pure render: model → Tern UI node tree (rows, badges, tab rows, confirmations, menus). |
@@ -186,6 +190,8 @@ Tern's plugin KV (`~/Library/Application Support/Tern/plugin-data/overseer/kv.js
 | `icebox` | `{[projectId]: {[path]: true}}` | Parked worktrees. `show-icebox` is the header toggle. |
 | `jobs` | `{[id]: {kind = "create" \| "remove", project, receipt, pane, …}}` | Running creations and deletions; creations also carry `branch`, `displayName?` and `agentPrompt?`. Persisted so a plugin reload doesn't lose them. |
 | `panel-open`, `panel-share` | `boolean`, `number` | Whether you want the Projects panel shown (the shortcut sets it), and its width as a share of the tab. |
+| `pending-form:<pane>`, `form:<token>` | `{token, mode, project, path?, response?, launched?}`, the form's answer | An open form's request, keyed by its pane, and the answer the form block posts. `forms` moves the answer into the request (`response`) so a reload resumes it. |
+| `self-reload` | Unix seconds | When Overseer last reloaded itself; enforces the 30 s cooldown across reloads. |
 
 Files under `tern.plugin.data`: `creation-<id>.status` and `removal-<id>.status` receipts written by the helper, and the `visual-pr/<project>-<pr>-<headsha>.md` outline cache.
 
@@ -195,7 +201,7 @@ In-memory only: the per-project `cache` (worktrees, PRs, loading/error flags), `
 
 **Refresh.** `refresh` runs `wt list --format=json` per project, then `refreshPullRequests` (one `gh pr list` per GitHub project, at most every 2 minutes, immediately after ↻ or a worktree set change). An open panel refreshes every 15 s from `tick`.
 
-**The following panel.** Tern panes belong to one tab, and plugins can't add a window-level sidebar, so the window keeps exactly one Projects slot and moves it into whichever tab is shown, left of everything and full height. `slot` finds it: the navigator canvas or a form shown in its place, adopting what a reload left open and closing any extra. `pin` moves it with `move_to_tab` (or `unpark`) then `move(…, "left")` and steers the split ratio to the remembered share, since Tern resizes in cells and hidden tabs measure differently. `follow` runs on `focus`, `tab_created`, `tab_closed`, `pane_created`, `pane_closed`, `window_start` and every `tick`, so one disabled hook can't strand the panel. Moves work across sessions. Edge cases:
+**The following panel.** Tern panes belong to one tab, and plugins can't add a window-level sidebar, so the window keeps exactly one Projects slot and moves it into whichever tab is shown, left of everything and full height. `slot` finds it: the navigator canvas or a form shown in its place, adopting what a reload left open and closing any extra. `pin` moves it with `move_to_tab` (or `unpark`) then `move(…, "left")` and steers the split ratio to the remembered share, since Tern resizes in cells and hidden tabs measure differently. `followSoon` queues `follow` on `focus`, `tab_created`, `tab_closed`, `pane_created`, `pane_closed`, `window_start` and every `tick`. Moves work across sessions. Edge cases:
 
 - **Last terminal in a tab closed:** the panel would be left alone, so `follow` parks it; the tab closes as Tern would have, and the next shown tab (or new tab) takes the panel back.
 - **Overseer closes a session:** `closeManagedSession` switches away and calls `follow` first, so the panel leaves before the session closes.
@@ -252,8 +258,8 @@ Other conventions:
 - macOS only (folder picker, paths, Tern desktop).
 - Visualize PR fails on PRs whose diff exceeds GitHub's 20,000-line API limit (`gh pr diff` returns HTTP 406). The tab shows the error.
 - The panel moves into each tab you switch to, so every switch animates briefly and resizes the terminals in both tabs (full-screen programs redraw). In a tab split top-and-bottom it sits beside the top half.
-- If the timer hook is ever disabled, clicks and process results stop redrawing the panel until the plugin reloads; tab and focus changes still redraw it.
-- A plugin reload during a Visualize PR run, including the one Tern does when you edit a file in a linked plugin, ends the run and leaves its tab on the waiting message. Run it again.
+- When Tern switches off Overseer's `timer` or `process` hook, Overseer reloads itself, which takes about 6 seconds of activity in the window (any keystroke, click or agent output) for a dead timer hook, and up to 25 seconds after a refresh for a dead process hook. Clicks made in the meantime are lost. A switched-off `canvas_action` hook can't be detected; clicks then answer `Nothing handles "…" here` until you reload the plugin (`tern plugin reload`).
+- A plugin reload during a Visualize PR run, including Overseer's own and the one Tern does when you edit a file in a linked plugin, ends the run and leaves its tab on the waiting message. Run it again.
 - Multiple Tern windows work but haven't been exhaustively tested together.
 
 ---
