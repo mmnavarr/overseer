@@ -333,16 +333,12 @@
   color: var(--warn);
   font-size: 0.8em;
 }
-[data-role='overseer.waiting'],
 [data-role='overseer.done'],
 [data-role='overseer.failed'] {
   font-size: 0.8em;
   font-weight: 650;
   white-space: nowrap;
   flex-shrink: 0;
-}
-[data-role='overseer.waiting'] {
-  color: #e0a800;
 }
 [data-role='overseer.done'] {
   color: var(--ok);

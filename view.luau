@@ -45,11 +45,12 @@ local PR_STATES = {
 }
 
 -- How each agent state shows: on the worktree row (a glyph badge, or a dot
--- for working) and on its tab rows (a small dot plus a label when it needs you).
+-- for working) and on its tab rows (a small dot, plus a label for done and
+-- failed; the yellow dot says waiting on its own).
 local AGENT_STATUS = {
 	waiting = {
 		glyph = "?", role = "overseer.statusWaiting", title = "Agent waiting for you",
-		tabRole = "overseer.dotTabWaiting", label = "needs you", labelRole = "overseer.waiting",
+		tabRole = "overseer.dotTabWaiting",
 	},
 	failed = {
 		glyph = "!", role = "overseer.statusFailed", title = "Agent failed",
@@ -230,7 +231,7 @@ local function worktreeNode(worktree, activePath)
 			dot("dot", if agent then agent.tabRole elseif tab.busy then "overseer.dotBusy" else "overseer.dotTab"),
 			text("name", tab.name, "overseer.tabName", { grow = 1 }),
 		}
-		-- A pulsing dot already says an agent is working; anything that needs you is spelled out.
+		-- The dot's colour says working or waiting; a finished turn is spelled out.
 		if agent and agent.label then
 			table.insert(tabChildren, text("state", agent.label, agent.labelRole))
 		elseif not agent and tab.busy then
