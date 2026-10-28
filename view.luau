@@ -56,7 +56,7 @@ local AGENT_STATUS = {
 		tabRole = "overseer.dotTabFailed", label = "failed", labelRole = "overseer.failed",
 	},
 	done = {
-		glyph = "✓", role = "overseer.statusDone", title = "Agent finished",
+		glyph = "✔", role = "overseer.statusDone", title = "Agent finished",
 		tabRole = "overseer.dotTabDone", label = "done", labelRole = "overseer.done",
 	},
 	working = { role = "overseer.dotAgent", title = "Agent working", tabRole = "overseer.dotTabAgent" },

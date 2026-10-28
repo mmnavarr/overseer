@@ -16,7 +16,7 @@ Click a row and you're in that branch's own workspace.
 Running five agents on five branches means five checkouts, a pile of terminals, and losing track of which agent is stuck waiting for you. Overseer is a [Tern](https://docs.stencil.so/tern/) plugin that fixes that:
 
 - **Every worktree gets its own Tern session.** Its tabs, shells and agents live there. Switching branches is one click, and nothing bleeds between them.
-- **You can see what every agent is doing.** A pulsing dot means an agent is working; an amber **?** means one is waiting for you; a green **✓** means one finished while you were elsewhere.
+- **You can see what every agent is doing.** A pulsing dot means an agent is working; a yellow **?** means one is waiting for you; a green **✔** means one finished while you were elsewhere.
 - **PRs and tickets sit on the row.** GitHub PR state (draft, open, merged, closed) and the Linear ticket, both one click away, each in a tab of its own.
 - **Worktrees come and go safely.** Creation and deletion run through [Worktrunk](https://worktrunk.dev) in the background, with your hooks and approvals intact.
 - **Agents can start work for you.** Tell Tern's assistant *"Create an overseer worktree for ENG-123"* and you get a branch, a session and an [omp](https://omp.sh) agent already reading the ticket.
@@ -35,8 +35,8 @@ The panel stays with you: it sits on the left of whichever tab you're looking at
 |---|---|
 | ● green | A session is open |
 | ● green, pulsing | An agent is working |
-| **?** amber, pulsing | An agent is waiting for your answer |
-| **✓** green | An agent finished while you were looking elsewhere (clears when you open its tab) |
+| **?** yellow | An agent is waiting for your answer |
+| **✔** green | An agent finished while you were looking elsewhere (clears when you open its tab) |
 | **!** red | An agent's turn failed while you were looking elsewhere |
 | ○ hollow | No session yet; click to open one |
 | **✱** amber | Uncommitted changes |

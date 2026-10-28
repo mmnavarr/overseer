@@ -95,7 +95,7 @@
 [data-role='overseer.worktreeSubtitle'] {
   color: var(--t3);
   font-size: 0.82em;
-  padding-left: 16px;
+  padding-left: 20px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -122,6 +122,21 @@
 [data-role='overseer.branch'] {
   font-weight: 600;
 }
+/* Every worktree status indicator (dot, glyph or 🧊) fills the same 12px
+   square, so branch names line up whatever state a row is in. */
+[data-role='overseer.dotOpen'],
+[data-role='overseer.dotIdle'],
+[data-role='overseer.dotBusy'],
+[data-role='overseer.dotAgent'],
+[data-role='overseer.statusWaiting'],
+[data-role='overseer.statusFailed'],
+[data-role='overseer.statusDone'],
+[data-role='overseer.iceMark'] {
+  width: 12px;
+  height: 12px;
+  min-width: 12px;
+  box-sizing: border-box;
+}
 [data-role='overseer.dotOpen'],
 [data-role='overseer.dotIdle'],
 [data-role='overseer.dotBusy'],
@@ -131,9 +146,6 @@
 [data-role='overseer.dotTabWaiting'],
 [data-role='overseer.dotTabDone'],
 [data-role='overseer.dotTabFailed'] {
-  width: 8px;
-  height: 8px;
-  min-width: 8px;
   border-radius: 50%;
 }
 [data-role='overseer.dotOpen'] {
@@ -155,39 +167,26 @@
   from { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 70%, transparent); }
   to { box-shadow: 0 0 0 6px color-mix(in srgb, var(--ok) 0%, transparent); }
 }
-/* States that need you take the dot's place as a 14px glyph badge: ? when an
-   agent asked something, ! when its turn failed, ✓ (green, like a session
-   that's open) when it finished out of sight. The negative margins keep
-   names aligned with the 8px dots. */
+/* States that need you show a bare glyph in the dot's place: a yellow ? when
+   an agent asked something, a green ✓ when it finished out of sight, a red !
+   when its turn failed. */
 [data-role='overseer.statusWaiting'],
 [data-role='overseer.statusFailed'],
 [data-role='overseer.statusDone'] {
-  width: 14px;
-  height: 14px;
-  min-width: 14px;
-  margin: 0 -3px;
-  border-radius: 50%;
-  font-size: 10px;
-  font-weight: 800;
-  line-height: 14px;
+  font-family: -apple-system, system-ui, sans-serif;
+  font-size: 15px;
+  font-weight: 900;
+  line-height: 12px;
   text-align: center;
-  color: #fff;
 }
-/* Waiting is the loudest: amber, with a ring that keeps pulsing until you answer. */
 [data-role='overseer.statusWaiting'] {
-  color: #111;
-  background: var(--warn);
-  animation: overseer-waiting-pulse 1.2s ease-out infinite;
-}
-@keyframes overseer-waiting-pulse {
-  from { box-shadow: 0 0 0 0 color-mix(in srgb, var(--warn) 80%, transparent); }
-  to { box-shadow: 0 0 0 7px color-mix(in srgb, var(--warn) 0%, transparent); }
+  color: #e0a800;
 }
 [data-role='overseer.statusFailed'] {
-  background: var(--bad);
+  color: var(--bad);
 }
 [data-role='overseer.statusDone'] {
-  background: var(--ok);
+  color: var(--ok);
 }
 @media (prefers-reduced-motion: reduce) {
   [data-role='overseer.dotAgent'],
@@ -195,19 +194,11 @@
     animation: none;
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 35%, transparent);
   }
-  [data-role='overseer.statusWaiting'] {
-    animation: none;
-    box-shadow: 0 0 0 3px color-mix(in srgb, var(--warn) 35%, transparent);
-  }
 }
-/* Ice Box worktrees show 🧊 in the dot's place. It is wider than the 8px dot;
-   the negative margins keep names aligned with the rows above. */
+/* Ice Box worktrees show 🧊 in the dot's place. */
 [data-role='overseer.iceMark'] {
-  width: 14px;
-  min-width: 14px;
-  margin: 0 -3px;
-  font-size: 12px;
-  line-height: 1;
+  font-size: 11px;
+  line-height: 12px;
   text-align: center;
 }
 [data-role='overseer.dotTab'],
@@ -224,8 +215,7 @@
   background: var(--t4);
 }
 [data-role='overseer.dotTabWaiting'] {
-  background: var(--warn);
-  animation: overseer-waiting-pulse 1.2s ease-out infinite;
+  background: #e0a800;
 }
 [data-role='overseer.dotTabDone'] {
   background: var(--ok);
@@ -348,9 +338,11 @@
 [data-role='overseer.failed'] {
   font-size: 0.8em;
   font-weight: 650;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 [data-role='overseer.waiting'] {
-  color: var(--warn);
+  color: #e0a800;
 }
 [data-role='overseer.done'] {
   color: var(--ok);
