@@ -16,8 +16,8 @@ Click a row and you're in that branch's own workspace.
 Running five agents on five branches means five checkouts, a pile of terminals, and losing track of which agent is stuck waiting for you. Overseer is a [Tern](https://docs.stencil.so/tern/) plugin that fixes that:
 
 - **Every worktree gets its own Tern session.** Its tabs, shells and agents live there. Switching branches is one click, and nothing bleeds between them.
-- **You can see what every agent is doing.** A pulsing dot means an agent is working; a blue dot means one is waiting for you.
-- **PRs and tickets sit on the row.** GitHub PR state (draft, open, merged, closed) and the Linear ticket, both one click away.
+- **You can see what every agent is doing.** A pulsing dot means an agent is working; an amber **?** means one is waiting for you; a green **✓** means one finished while you were elsewhere.
+- **PRs and tickets sit on the row.** GitHub PR state (draft, open, merged, closed) and the Linear ticket, both one click away, each in a tab of its own.
 - **Worktrees come and go safely.** Creation and deletion run through [Worktrunk](https://worktrunk.dev) in the background, with your hooks and approvals intact.
 - **Agents can start work for you.** Tell Tern's assistant *"Create an overseer worktree for ENG-123"* and you get a branch, a session and an [omp](https://omp.sh) agent already reading the ticket.
 - **PRs can be understood at a glance.** **Visualize PR** turns a pull request into a diagram-first outline, without touching GitHub.
@@ -35,7 +35,9 @@ The panel stays with you: it sits on the left of whichever tab you're looking at
 |---|---|
 | ● green | A session is open |
 | ● green, pulsing | An agent is working |
-| ● blue, haloed | An agent is waiting for your answer |
+| **?** amber, pulsing | An agent is waiting for your answer |
+| **✓** green | An agent finished while you were looking elsewhere (clears when you open its tab) |
+| **!** red | An agent's turn failed while you were looking elsewhere |
 | ○ hollow | No session yet; click to open one |
 | **✱** amber | Uncommitted changes |
 | **conflicts** | A merge or rebase is stuck |
@@ -53,7 +55,7 @@ You need macOS and:
 
 | | Required for | |
 |---|---|---|
-| [Tern](https://docs.stencil.so/tern/) desktop | everything | tested with 0.6.2 |
+| [Tern](https://docs.stencil.so/tern/) desktop | everything | 0.9.6 or later |
 | [Worktrunk](https://worktrunk.dev) (`wt`), Git, Bash | everything | tested with wt 0.40.0 |
 | [GitHub CLI](https://cli.github.com) (`gh`), signed in | PR badges, Visualize PR | optional |
 | [Linear CLI](https://github.com/schpet/linear-cli) (`linear`), signed in | ticket links | optional |
@@ -82,7 +84,7 @@ Linking reloads the plugin whenever the source changes. Use `tern plugin install
 - **Add to Ice Box** parks a worktree at the bottom; 🧊 in the header hides or shows parked ones
 - **Close session** stops its programs and closes its tabs (the files stay)
 - **Delete worktree** runs `wt remove`. It refuses if there are uncommitted changes and always keeps the branch.
-- On a project: **Change base branch** and **Set Linear workspace**
+- On a project: **Change base branch**, **Set Linear workspace** and **Remove project** (stops showing it; the repository, worktrees and sessions stay, and adding it again brings back its names and Ice Box)
 
 ### Start work from a ticket
 
@@ -148,28 +150,27 @@ Tern APIs are typed in the definitions Tern generates: `/Applications/Tern.app/C
 
 ### The 50 ms rule (read this first)
 
-Tern gives **every plugin callback 50 ms**. A single overrun disables that hook (`canvas_action`, `timer`, `process`, …) **until the plugin reloads**, and the only trace is a line in `~/Library/Logs/Tern/tern.log`. The overrun can't be caught (`pcall` doesn't help; the callback just stops, and its `tern.kv` writes can be lost), and it can't be prevented either: while Tern is busy, a callback doing almost nothing still overruns when Tern stalls inside one of its calls. A full draw takes under 10 ms.
+Tern gives **every window-half callback 50 ms of Lua**. Native calls (the `cx` API, `tern.kv`, starting a process) don't count, but a callback may take at most 500 ms of wall time with them. A callback past either limit is cut short (`pcall` doesn't help, and its `tern.kv` writes can be lost) and Tern **pauses that hook**: 5 s, doubling for each repeat within 10 minutes, up to 5 minutes. Timers, process results and fetches that come due during a pause wait for it to end; they aren't dropped. A full draw takes under 10 ms.
 
-So Overseer survives overruns instead of trying to avoid them. `budget.luau` owns this:
+`budget.luau` owns this:
 
-- **Work runs in timer callbacks; every other hook only queues it.** Clicks (`canvas_action`), commands, and tab, pane and focus events call `separately(label, fn)` or `followSoon()`, and return. `budget.later(label, ms, fn)` is the only way to start a timer: it labels the callback and logs any that take 30 ms or more (`Overseer: <label> took N ms of its 50 ms budget`).
-- **Overseer reloads itself when the `timer` or `process` hook dies.** Every other hook (`focus`, tab and pane events, `title`, `command_finished`, `agent_finished`, clicks, commands, process results) calls `budget.checkTimers`. When no timer callback has run for 5 s, it plants a probe timer, and if that hasn't fired a second later, the timer hook is off. The tick calls `budget.checkProcesses`, which treats a process unreported 10 s past its own timeout (counted in ticks, since an idle window runs none) as a dead `process` hook. Either one runs `tern plugin reload` (at most every 30 s) and logs `Overseer is reloading itself: …`, naming the callback that was cut short. The CLI matters: it reloads through the session daemon, which hands the Projects panel to the reloaded plugin, while the window's `reload_plugins` action leaves an ownerless, empty `Canvas` pane behind. The action is used only when the CLI isn't found.
-- **A disabled `canvas_action` can't be noticed** (every click answers `Nothing handles "open" here` and nothing reaches Overseer), which is why that hook does nothing but queue.
-- **Make every step safe to cut short.** A callback that's cut short leaves its in-memory state behind and can lose its kv writes, then the reload starts from kv. So write the record that says "done" last: `finishForm` drops a form's `pending-form` record only after the panel is back, a creation records `launched` on the form before finishing it, and `checkJobs` takes a job off the books before deleting its receipt. A form found without its record can never answer, so `forms` puts Projects back in its place.
+- **Work runs in timer callbacks; every other hook only queues it.** Clicks (`canvas_action`), commands, and tab, pane, focus and agent events call `separately(label, fn)` or `followSoon()`, and return. A paused `canvas_action` hook would swallow every click until the pause ends, so it must stay too small to trip. `budget.later(label, ms, fn)` is the only way to start a timer: it labels the callback so a timer pause names it.
+- **Pauses are logged.** The `budget` event logs `Overseer: Tern paused its <hook> hook for N s after a callback (<label>) ran over 50 ms` and, when the hook resumes, runs `followSoon` to catch the panel up.
+- **Make every step safe to cut short.** A callback that's cut short leaves its in-memory state behind and can lose its kv writes. So write the record that says "done" last: `finishForm` drops a form's `pending-form` record only after the panel is back, a creation records `launched` on the form before finishing it, and `checkJobs` takes a job off the books before deleting its receipt. A form found without its record can never answer, so `forms` puts Projects back in its place.
 - There is **one panel per window**, so a draw costs the same however many sessions are open.
-- **Start processes only through `wt.spawn`.** Starting a process can stall for tens of milliseconds while Tern is busy, so `wt.spawn` starts each one in a timer callback of its own, and `budget.process` hands its result to the caller in another, so the `process` hook itself never does work. Never call `tern.process.run` directly.
+- **Start processes only through `wt.spawn`.** It starts the process right away and hands the result, or a failure to start, to the caller with a `cx`, logging errors in the callback under the command's name.
 
 Tern doesn't run plugin timers while its window sits idle with no events; the next event runs every overdue timer. An isolated test window behind other windows therefore looks frozen until you click it.
 
-When debugging an overrun, read the log: `exceeded its budget … hook="timer"` is followed by Overseer's reload line naming the callback that was cut short, and `took N ms` lines show which callbacks run close to the limit. To reproduce, use an isolated window (below); several terminals running `yes` make a busy Tern that overruns within minutes.
+When debugging an overrun, read the log: `exceeded its budget; paused … hook="timer"` is followed by Overseer's line naming the callback that ran over.
 
 ### Files
 
 | File | What lives there |
 |---|---|
 | `window.luau` | Project registry, model building (`model`), drawing (`draw`/`redraw`), the following panel (`slot`, `pin`, `follow`, `followSoon`, `togglePanel`), session binding (`ensureSession`, `openWorktree`), forms swapped into the panel's slot (`openForm`, `forms`, `answerForm`, `finishForm`), background jobs (`launchCreation`, `checkJobs`, `jobFinished`), ticket links (`ticketOf`, `ticketFor`), Linear workspace lookup, Visualize PR canvases, the Carly export, hooks and the 750 ms `tick`. |
-| `budget.luau` | Living with the 50 ms rule: `later` (labelled timer callbacks, slow-callback log), `process` (process results handed to a timer callback), and the self-reload watchdog (`checkTimers`, `checkProcesses`). |
-| `worktrunk.luau` | Every external command: `wt list`, validation, the creation and removal command lines, `git` status, `gh pr list`/`gh pr view`/`gh pr diff`, `linear auth whoami`. Commands are argv arrays started by `spawn`, one per timer callback (see the 50 ms rule); `find_executable` checks Homebrew, `/usr/local/bin`, `~/.bun/bin` and `~/.local/bin`. |
+| `budget.luau` | Living with the 50 ms rule: `later` (labelled timer callbacks), `process` (process results with logged errors), and `describe` (the log line for a `budget` event). |
+| `worktrunk.luau` | Every external command: `wt list`, validation, the creation and removal command lines, `git` status, `gh pr list`/`gh pr view`/`gh pr diff`, `linear auth whoami`. Commands are argv arrays started by `spawn`; `find_executable` checks Homebrew, `/usr/local/bin`, `~/.bun/bin` and `~/.local/bin`. |
 | `visualize.luau` | Visualize PR: prompt, read-only omp invocation, output extraction, cache. |
 | `view.luau` | Pure render: model → Tern UI node tree (rows, badges, tab rows, confirmations, menus). |
 | `worktree-operation.sh` | The helper that runs `wt switch --create` / `wt remove` in a visible terminal and writes an atomic completion receipt. |
@@ -191,7 +192,7 @@ Tern's plugin KV (`~/Library/Application Support/Tern/plugin-data/overseer/kv.js
 | `jobs` | `{[id]: {kind = "create" \| "remove", project, receipt, pane, …}}` | Running creations and deletions; creations also carry `branch`, `displayName?` and `agentPrompt?`. Persisted so a plugin reload doesn't lose them. |
 | `panel-open`, `panel-share` | `boolean`, `number` | Whether you want the Projects panel shown (the shortcut sets it), and its width as a share of the tab. |
 | `pending-form:<pane>`, `form:<token>` | `{token, mode, project, path?, response?, launched?}`, the form's answer | An open form's request, keyed by its pane, and the answer the form block posts. `forms` moves the answer into the request (`response`) so a reload resumes it. |
-| `self-reload` | Unix seconds | When Overseer last reloaded itself; enforces the 30 s cooldown across reloads. |
+| `agents-finished` | `{[paneId]: "done" \| "failed"}` | Agent turns that ended while their tab wasn't shown. Cleared when the tab is shown, the agent starts again, or the pane closes. |
 
 Files under `tern.plugin.data`: `creation-<id>.status` and `removal-<id>.status` receipts written by the helper, and the `visual-pr/<project>-<pr>-<headsha>.md` outline cache.
 
@@ -211,7 +212,11 @@ In-memory only: the per-project `cache` (worktrees, PRs, loading/error flags), `
 
 **Delete.** Confirmation → `wt.validate_removal` (repository identity, branch, cleanliness) → removal job in a background tab → receipt → close the worktree's session only if the directory is gone, then drop its name, binding and Ice Box entry.
 
-**Agent status.** `agentActivity` reads `cx.agents:list()`: `state == "waiting_input"` → waiting, `"working"` → working. For agent CLIs in plain terminals (`omp`, `pi`, `claude`, `codex`, `opencode`, `gemini`, `aider`, `amp`, `cursor-agent`, `crush`, `goose`) it uses the pane's `busy` flag. Waiting wins over working per session and tab.
+**Agent status.** `agentActivity` reads `cx.agents:list()`: `state == "waiting_input"` → waiting, `"working"` → working, otherwise the pane's `agents-finished` mark (done or failed). An `agent_finished` event with result `done` or `failed` sets that mark unless the agent's tab is shown; `agent_state` back to working or waiting clears it, and `markSeen` (after every `follow`) clears marks whose tab is shown or whose pane is gone. For agent CLIs in plain terminals (`omp`, `pi`, `claude`, `codex`, `opencode`, `gemini`, `aider`, `amp`, `cursor-agent`, `crush`, `goose`) it uses the pane's `busy` flag (working only). Per session and tab the state that most needs you wins: waiting, then failed, then done, then working.
+
+**Links.** Ticket and PR icons send `link=<url>`. `cx:open` puts a URL in a browser split beside the focused pane whatever `how` says, so `openLink` moves the new browser pane into a tab of its own.
+
+**Remove project.** Drops the project from `projects` and its in-memory cache; refuses while a creation or deletion runs for it. `worktree-names`, `icebox` and `sessions` stay, so adding the repository again brings them back.
 
 **Ticket links.** `ticketOf` takes the first uppercase `ABC-123` in the branch (`%f[%w](%u[%u%d]*%-%d+)%f[%W]`), so `chore/stage-1` doesn't count. The workspace is `project.linear`, else the slug from `linear auth whoami` (looked up once; ↻ retries a failure). URL: `https://linear.app/<workspace>/issue/<id>`.
 
@@ -248,7 +253,7 @@ Seed projects by writing `$D/config/plugin-data/overseer/kv.json` before launch.
 
 Other conventions:
 
-- Editing any file in a linked plugin reloads it in every running Tern, which re-enables disabled hooks.
+- Editing any file in a linked plugin reloads it in every running Tern. Develop in a separate checkout linked into an isolated window so your everyday Overseer isn't reloaded mid-edit.
 - After changing an icon, run `python3 icons/generate-css.py`.
 - Bump `version` in `plugin.toml` for user-visible changes and add an entry to [`CHANGELOG.md`](CHANGELOG.md). A change to how the panel or its state is structured is a major version.
 - Keep external commands in `worktrunk.luau` as argv arrays. Shell is only used where a redirect is needed, with arguments as `$0…$n`.
@@ -258,8 +263,7 @@ Other conventions:
 - macOS only (folder picker, paths, Tern desktop).
 - Visualize PR fails on PRs whose diff exceeds GitHub's 20,000-line API limit (`gh pr diff` returns HTTP 406). The tab shows the error.
 - The panel moves into each tab you switch to, so every switch animates briefly and resizes the terminals in both tabs (full-screen programs redraw). In a tab split top-and-bottom it sits beside the top half.
-- When Tern switches off Overseer's `timer` or `process` hook, Overseer reloads itself, which takes about 6 seconds of activity in the window (any keystroke, click or agent output) for a dead timer hook, and up to 25 seconds after a refresh for a dead process hook. Clicks made in the meantime are lost. A switched-off `canvas_action` hook can't be detected; clicks then answer `Nothing handles "…" here` until you reload the plugin (`tern plugin reload`).
-- A plugin reload during a Visualize PR run, including Overseer's own and the one Tern does when you edit a file in a linked plugin, ends the run and leaves its tab on the waiting message. Run it again.
+- A plugin reload during a Visualize PR run, including the one Tern does when you edit a file in a linked plugin, ends the run and leaves its tab on the waiting message. Run it again.
 - Multiple Tern windows work but haven't been exhaustively tested together.
 
 ---

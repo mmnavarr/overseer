@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.2.0 (2026-10-28)
+
+Requires Tern 0.9.6.
+
+- **Agents that need you stand out.** A worktree whose agent is asking you something shows a pulsing amber **?** instead of a dot. One whose agent finished while you were looking elsewhere shows a green **✓**, and one whose turn failed shows a red **!**; both clear once you open the agent's tab. Tab rows say **needs you**, **done** or **failed**. The marks update the moment an agent's state changes instead of on the next refresh.
+- **Ticket and pull request links open in a tab of their own** instead of splitting the pane you're in.
+- **Remove project** on a project's right-click menu stops showing it in Projects. The repository, its worktrees and open sessions stay, and adding it again brings back its display names and Ice Box.
+- **No more self-reloads.** Tern 0.9.6 pauses a plugin hook for a few seconds after an overrun instead of switching it off until reload, and only counts the plugin's own Lua against the budget. Overseer's watchdog and self-reload are gone; pauses are logged (`Overseer: Tern paused its <hook> hook …`) and the panel catches up when the hook resumes.
+- Processes start straight away instead of one per timer callback.
+
 ## 2.1.0 (2026-10-27)
 
 - **Overseer recovers on its own when Tern switches part of it off.** Tern turns off any part of a plugin whose callback runs past 50 ms, until the plugin reloads, and a busy Tern makes that happen several times a day however little the callback does. Projects then stopped refreshing, forms stayed on "Returning to Projects…" or "Working…", and finished worktrees went unnoticed until you reloaded the plugin. Overseer now notices when its timers or process results have stopped and reloads itself (at most every 30 seconds), logging which callback was cut short. Clicks, commands and tab changes now only queue their work, so the click handler, which Overseer can't watch, stays too small to overrun.

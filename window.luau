@@ -118,8 +118,29 @@ local function runsAgent(line)
 	return false
 end
 
--- Agent activity in this window: "waiting" (it asked you something) or
--- "working", per session id (as a string), per tab id and per pane id.
+-- Agent turns that ended out of sight: pane id (string) -> "done" | "failed".
+-- Kept in kv so a reload doesn't forget them; cleared once the pane's tab is
+-- shown, its agent starts again, or the pane closes.
+local function finishedAgents()
+	return records("agents-finished")
+end
+
+local function setFinished(pane, outcome)
+	local finished = finishedAgents()
+	local key = tostring(pane)
+	if finished[key] == outcome then return false end
+	finished[key] = outcome
+	tern.kv.set("agents-finished", finished)
+	return true
+end
+
+-- Which state shows when a tab or session holds agents in several: the one
+-- that most needs you.
+local AGENT_RANK = { waiting = 4, failed = 3, done = 2, working = 1 }
+
+-- Agent activity in this window, per session id (as a string), per tab id
+-- and per pane id: "waiting" (it asked you something), "failed" or "done"
+-- (its turn ended while you looked elsewhere), or "working".
 -- Native agent blocks such as omp report their state;
 -- their `busy` stays set while they sit idle, so it isn't consulted for them.
 -- Agent CLIs in plain terminals only report progress, which Tern exposes as
@@ -130,15 +151,15 @@ local function agentActivity(cx)
 	local activity = { sessions = {}, tabs = {}, panes = {} }
 	local function mark(pane, tab, state)
 		activity.panes[pane] = state
-		-- Waiting wins: it is the state that needs you.
 		local session = tabSession[tab] or ""
-		if activity.sessions[session] ~= "waiting" then activity.sessions[session] = state end
-		if activity.tabs[tab] ~= "waiting" then activity.tabs[tab] = state end
+		if (AGENT_RANK[activity.sessions[session]] or 0) < AGENT_RANK[state] then activity.sessions[session] = state end
+		if (AGENT_RANK[activity.tabs[tab]] or 0) < AGENT_RANK[state] then activity.tabs[tab] = state end
 	end
+	local finished = finishedAgents()
 	for _, agent in cx.agents:list() do
 		local state = if agent.state == "waiting_input" then "waiting"
 			elseif agent.state == "working" then "working"
-			else nil
+			else finished[tostring(agent.pane)]
 		local info = state and cx.session:pane(agent.pane)
 		if info and info.tab then mark(agent.pane, info.tab, state) end
 	end
@@ -313,9 +334,9 @@ local function draw(cx)
 end
 
 -- Runs fn(cx) in a timer callback of its own, reporting (not raising) errors.
--- Tern gives every callback its own 50 ms budget and switches a hook off after
--- one overrun (see budget.luau), so hooks other than timers only queue work
--- here, and no single callback carries a whole sequence.
+-- Tern cuts a callback short past its 50 ms budget and pauses that hook (see
+-- budget.luau), so hooks other than timers only queue work here, and no
+-- single callback carries a whole sequence.
 local function separately(label, fn)
 	budget.later(label, 0, function(cx)
 		if not cx then return end
@@ -501,6 +522,23 @@ end
 local function shownTab(cx)
 	local focused = cx.session:focused()
 	return focused and cx.session:tab_of(focused)
+end
+
+-- Forgets finished-agent marks you have now seen (their tab is shown) or that
+-- can't be seen any more (their pane closed).
+local function markSeen(cx)
+	local finished = finishedAgents()
+	if next(finished) == nil then return end
+	local tab = shownTab(cx)
+	local changed = false
+	for key in finished do
+		local info = cx.session:pane(tonumber(key))
+		if not info or (tab and info.tab == tab) then
+			finished[key] = nil
+			changed = true
+		end
+	end
+	if changed then tern.kv.set("agents-finished", finished) end
 end
 
 local function setWantPanel(want)
@@ -709,6 +747,35 @@ local function requestWorktreeAction(cx, kind, path)
 	redraw(cx)
 end
 
+-- Removing a project only stops Overseer tracking it. Display names, Ice Box
+-- entries and session bindings are keyed by path, so they stay and come back
+-- if the repository is added again.
+local function requestProjectRemoval(cx, id)
+	local project = projectById(id)
+	if not project then report(cx, "Project not found. Refresh Projects."); return end
+	for _, job in records("jobs") do
+		if job.project == project.id then
+			report(cx, "Finish the running worktree operation first.", "Project busy"); return
+		end
+	end
+	confirmation = {
+		id = token(), kind = "remove-project", path = project.path, label = project.name, project = project.id,
+	}
+	redraw(cx)
+end
+
+local function removeProject(cx, request)
+	confirmation = nil
+	local kept = {}
+	for _, project in projects() do
+		if project.id ~= request.project then table.insert(kept, project) end
+	end
+	tern.kv.set("projects", kept)
+	cache[request.project], collapsed[request.project] = nil, nil
+	cx:toast("info", "Project removed", notificationLabel(request.label))
+	redraw(cx)
+end
+
 -- Open PR outline canvases by "<project id>#<number>": asking again focuses the open one.
 local outlines = {}
 
@@ -764,6 +831,7 @@ end
 local function confirmWorktreeAction(cx, id)
 	local request = confirmation
 	if not request or request.id ~= id or request.checking then return end
+	if request.kind == "remove-project" then removeProject(cx, request); return end
 	if request.kind == "close" then
 		confirmation = nil
 		local ok, err = closeManagedSession(cx, request.path)
@@ -874,8 +942,8 @@ local function rejectForm(cx, pane, err)
 end
 
 -- Puts the Projects panel back in the form's place. The form's record goes
--- last: if Tern cuts this callback short, the next form check (or the one
--- after the self-reload, see budget.luau) finds the record and finishes again.
+-- last: if Tern cuts this callback short, the next form check finds the
+-- record and finishes again.
 local function finishForm(cx, pane)
 	if cx.session:pane(pane) then
 		local data = model(cx)
@@ -1307,8 +1375,7 @@ end
 
 -- Commands, like clicks, only queue their work.
 local function command(id, title, icon, keys, run)
-	tern.command({ id = id, title = title, icon = icon, keys = keys, run = function(cx)
-		budget.checkTimers(cx)
+	tern.command({ id = id, title = title, icon = icon, keys = keys, run = function(_cx)
 		separately("command " .. id, run)
 	end })
 end
@@ -1379,9 +1446,28 @@ tern.carly.context(function()
 	return "Overseer creates Linear-ticket worktrees with ticket_worktree. " .. projectNames()
 end)
 
+-- Ticket and pull request links open in a tab of their own. `cx:open` puts a
+-- URL in a browser split beside the focused pane whatever `how` says, so the
+-- new browser pane moves to a new tab (the panel follows it there).
+local function openLink(cx, url)
+	if type(url) ~= "string" or not url:match("^https://") then return end
+	local before = {}
+	for _, pane in cx.session:panes() do before[pane.pane] = true end
+	cx:open(url, "tab")
+	for _, pane in cx.session:panes() do
+		if not before[pane.pane] and pane.kind == "browser" then
+			cx.layout:move_to_new_tab(pane.pane)
+			return
+		end
+	end
+end
+
 local function canvasAction(ev, cx)
 	if ev.act == "help" then
 		cx.docs:open(tern.plugin.dir .. "/README.md", { how = "tab" })
+		return
+	elseif ev.act == "link" then
+		openLink(cx, ev.value)
 		return
 	end
 	if not requireLocal(cx) then return end
@@ -1392,7 +1478,7 @@ local function canvasAction(ev, cx)
 	elseif ev.act == "create" then
 		local project = projectById(ev.value)
 		if project then openForm(cx, "create", project) end
-	elseif ev.act == "open" then openWorktree(cx, ev.value)
+	elseif ev.act == "open-worktree" then openWorktree(cx, ev.value)
 	elseif ev.act == "Add to Ice Box" or ev.act == "Remove from Ice Box" then
 		-- Menu entries show their action verbatim, so these read as titled.
 		local project, worktree = findWorktree(view.worktreePath(ev.node))
@@ -1409,6 +1495,8 @@ local function canvasAction(ev, cx)
 		local project = projectById(view.projectId(ev.node))
 		if project then openForm(cx, if ev.act == "Change base branch" then "base" else "linear", project)
 		else report(cx, "Project not found. Refresh Projects.") end
+	elseif ev.act == "Remove project" then
+		requestProjectRemoval(cx, view.projectId(ev.node))
 	elseif ev.act == "Visualize PR" then
 		visualizePr(cx, view.worktreePath(ev.node))
 	elseif ev.act == "Rename" then
@@ -1430,23 +1518,20 @@ end
 
 local CANVAS_ACTIONS = {}
 for _, act in {
-	"help", "add", "refresh", "collapse", "create", "open", "Add to Ice Box", "Remove from Ice Box",
-	"toggle-icebox", "Change base branch", "Set Linear workspace", "Visualize PR", "Rename",
+	"help", "add", "refresh", "collapse", "create", "open-worktree", "link", "Add to Ice Box", "Remove from Ice Box",
+	"toggle-icebox", "Change base branch", "Set Linear workspace", "Remove project", "Visualize PR", "Rename",
 	"Close session", "Delete worktree", "confirm", "cancel", "tab",
 } do CANVAS_ACTIONS[act] = true end
 
--- Clicks only queue their work. Nothing notices a switched-off canvas_action
--- hook (every click would answer `Nothing handles "…" here`), so this hook
--- must stay too small to overrun.
-tern.on("canvas_action", function(ev, cx)
-	budget.checkTimers(cx)
+-- Clicks only queue their work: an overrun here would pause the hook and
+-- swallow clicks until the pause ends, so it must stay too small to trip.
+tern.on("canvas_action", function(ev, _cx)
 	if not CANVAS_ACTIONS[ev.act] then return false end
 	separately("click " .. ev.act, function(nextCx) canvasAction(ev, nextCx) end)
 	return true
 end)
 
 tern.override("new_tab", function(cx)
-	budget.checkTimers(cx)
 	if not localHost(cx) then return false end
 	local _, worktree = activeWorktree(cx)
 	if not worktree then return false end
@@ -1469,6 +1554,8 @@ local function followSoon()
 		if not cx then return end
 		local ok, err = pcall(follow, cx)
 		if not ok then tern.log.warn("Projects panel: " .. tostring(err)) end
+		ok, err = pcall(markSeen, cx)
+		if not ok then tern.log.warn("Overseer: agent marks: " .. tostring(err)) end
 		redraw(cx)
 	end)
 end
@@ -1478,7 +1565,6 @@ end
 local function tick(cx)
 	budget.later("tick", 750, tick)
 	if not cx or not localHost(cx) then return end
-	budget.checkProcesses(cx)
 	separately("form check", forms)
 	-- Resumes fast form checks after a plugin reload left a form open.
 	watchForms()
@@ -1490,22 +1576,38 @@ local function tick(cx)
 	followSoon()
 end
 
-tern.on("window_start", function(cx)
-	budget.checkTimers(cx)
+tern.on("window_start", function(_cx)
 	separately("refresh", refresh)
 	followSoon()
 end)
 -- Every tab, pane and focus change moves the panel into the shown tab.
 for _, name in { "focus", "tab_created", "tab_closed", "pane_created", "pane_closed" } do
-	tern.on(name, function(_ev, cx)
-		budget.checkTimers(cx)
-		followSoon()
-	end)
+	tern.on(name, function(_ev, _cx) followSoon() end)
 end
--- Busy terminals and agents report these all the time: frequent, cheap
--- chances to notice a switched-off timer hook while nobody touches Tern.
-for _, name in { "title", "command_finished", "agent_finished" } do
-	tern.on(name, function(_ev, cx) budget.checkTimers(cx) end)
-end
+-- An agent starting again clears its finished mark; any change redraws.
+tern.on("agent_state", function(ev, _cx)
+	if ev.new == "working" or ev.new == "waiting_input" then
+		separately("agent state", function() setFinished(ev.pane, nil) end)
+	end
+	followSoon()
+end)
+-- A turn that ends out of sight leaves a done or failed mark until you look.
+tern.on("agent_finished", function(ev, _cx)
+	if ev.result == "done" or ev.result == "failed" then
+		separately("agent finished", function(cx)
+			local info = cx.session:pane(ev.pane)
+			if info and info.tab ~= shownTab(cx) then setFinished(ev.pane, ev.result) end
+		end)
+	end
+	followSoon()
+end)
+-- Tern pauses a hook whose callback ran over its budget; due timers and
+-- process results wait for the pause, so catching up is one follow and draw.
+tern.on("budget", function(ev, _cx)
+	tern.log.warn(budget.describe(ev))
+	if ev.state == "resumed" then followSoon() end
+end)
 -- Timers are restarted on reload; window_start intentionally is not.
 budget.later("tick", 750, tick)
+-- 2.1's self-reload cooldown; nothing reads it any more.
+tern.kv.set("self-reload", nil)

@@ -9,18 +9,15 @@ local function deferred_error(done, message)
 	end)
 end
 
--- Starts argv in a timer callback of its own and calls fn(result, cx) when it
--- ends, or fn(nil, cx, err) when it can't start. Starting a process can stall
--- for tens of milliseconds while Tern is busy (for example, a terminal
--- printing a dependency install), and Tern disables a plugin hook after one
--- 50 ms overrun, so no callback ever starts more than one process. The result
--- arrives in a timer callback too (see budget.process).
+-- Starts argv and calls fn(result, cx) when it ends, or fn(nil, cx, err) in
+-- a timer callback when it can't start. Starting a process is a native call,
+-- so it doesn't count against the caller's 50 ms budget.
 function M.spawn(argv, options, fn)
 	local label = argv[1]:match("([^/]+)$") or argv[1]
-	budget.later("start " .. label, 0, function(cx)
-		local ok, err = pcall(budget.process, label .. " result", argv, options, fn)
-		if not ok then fn(nil, cx, tostring(err)) end
-	end)
+	local ok, err = pcall(budget.process, label .. " result", argv, options, fn)
+	if not ok then
+		budget.later("start " .. label, 0, function(cx) fn(nil, cx, tostring(err)) end)
+	end
 end
 
 local function run(argv, done, cwd)

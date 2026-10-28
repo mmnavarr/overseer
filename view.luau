@@ -44,6 +44,39 @@ local PR_STATES = {
 	closed = { role = "overseer.prClosed", label = "Closed" },
 }
 
+-- How each agent state shows: on the worktree row (a glyph badge, or a dot
+-- for working) and on its tab rows (a small dot plus a label when it needs you).
+local AGENT_STATUS = {
+	waiting = {
+		glyph = "?", role = "overseer.statusWaiting", title = "Agent waiting for you",
+		tabRole = "overseer.dotTabWaiting", label = "needs you", labelRole = "overseer.waiting",
+	},
+	failed = {
+		glyph = "!", role = "overseer.statusFailed", title = "Agent failed",
+		tabRole = "overseer.dotTabFailed", label = "failed", labelRole = "overseer.failed",
+	},
+	done = {
+		glyph = "✓", role = "overseer.statusDone", title = "Agent finished",
+		tabRole = "overseer.dotTabDone", label = "done", labelRole = "overseer.done",
+	},
+	working = { role = "overseer.dotAgent", title = "Agent working", tabRole = "overseer.dotTabAgent" },
+}
+
+local CONFIRMATIONS = {
+	delete = {
+		title = "Delete worktree?", confirm = "Delete worktree", keep = "Keep this worktree and session",
+		detail = "Removes this directory, including ignored files. Keeps Git branches. Its session closes after successful removal. Stop file-writing tasks first.",
+	},
+	close = {
+		title = "Close session?", confirm = "Close session", keep = "Keep this session",
+		detail = "Stops all running programs and closes this session's tabs. Keeps the worktree files and Git branches.",
+	},
+	["remove-project"] = {
+		title = "Remove project?", confirm = "Remove project", keep = "Keep this project",
+		detail = "Stops showing this repository in Projects. Keeps the repository, its worktrees, branches and open sessions. Adding it again restores its names and Ice Box.",
+	},
+}
+
 local function dot(key, role)
 	return ui.el("div", { key = key, role = role })
 end
@@ -93,10 +126,8 @@ local function details(worktree, branch)
 	if pr then table.insert(lines, "PR #" .. tostring(worktree.pr.number) .. " · " .. pr.label) end
 	if worktree.session then
 		local tabs = #(worktree.tabs or {})
-		local agent = if worktree.agent == "waiting" then " · agent waiting for you"
-			elseif worktree.agent == "working" then " · agent working"
-			else ""
-		table.insert(lines, "Session: " .. plural(tabs, "tab") .. agent)
+		local agent = AGENT_STATUS[worktree.agent]
+		table.insert(lines, "Session: " .. plural(tabs, "tab") .. (if agent then " · " .. string.lower(agent.title) else ""))
 	else
 		table.insert(lines, "No session · click to open")
 	end
@@ -122,18 +153,18 @@ local function worktreeNode(worktree, activePath)
 	local status
 	if worktree.iced then
 		status = text("status", "🧊", "overseer.iceMark", { title = "In the Ice Box" })
+	elseif worktree.deleting then
+		status = ui.el("div", { key = "status", role = "overseer.dotBusy", title = "Deleting" })
+	elseif AGENT_STATUS[worktree.agent] then
+		local agent = AGENT_STATUS[worktree.agent]
+		status = if agent.glyph
+			then text("status", agent.glyph, agent.role, { title = agent.title })
+			else ui.el("div", { key = "status", role = agent.role, title = agent.title })
 	else
-		local role, title = "overseer.dotIdle", "No session"
-		if worktree.deleting then
-			role, title = "overseer.dotBusy", "Deleting"
-		elseif worktree.agent == "waiting" then
-			role, title = "overseer.dotWaiting", "Agent waiting for you"
-		elseif worktree.agent == "working" then
-			role, title = "overseer.dotAgent", "Agent working"
-		elseif worktree.session then
-			role, title = "overseer.dotOpen", "Session open"
-		end
-		status = ui.el("div", { key = "status", role = role, title = title })
+		status = ui.el("div", {
+			key = "status", role = if worktree.session then "overseer.dotOpen" else "overseer.dotIdle",
+			title = if worktree.session then "Session open" else "No session",
+		})
 	end
 	local head = {
 		status,
@@ -161,15 +192,15 @@ local function worktreeNode(worktree, activePath)
 	if worktree.ticket then
 		table.insert(links, ui.el("button", {
 			key = "linear", role = "overseer.linear", title = worktree.ticket.id .. " — open in Linear",
-			href = worktree.ticket.url, aria = "Linear ticket " .. worktree.ticket.id, actions = { click = "open" },
+			aria = "Linear ticket " .. worktree.ticket.id, actions = { click = "link=" .. worktree.ticket.url },
 		}))
 	end
 	local pr = worktree.pr and PR_STATES[worktree.pr.state]
 	if pr then
 		local summary = "#" .. tostring(worktree.pr.number) .. " · " .. pr.label
 		table.insert(links, ui.el("button", {
-			key = "pr", role = pr.role, title = summary .. " — open on GitHub", href = worktree.pr.url,
-			aria = "Pull request " .. summary, actions = { click = "open" },
+			key = "pr", role = pr.role, title = summary .. " — open on GitHub",
+			aria = "Pull request " .. summary, actions = { click = "link=" .. worktree.pr.url },
 		}))
 	end
 	if #links > 0 then
@@ -182,30 +213,27 @@ local function worktreeNode(worktree, activePath)
 		else basename(worktree.path)
 	local summary = ui.node("col", {
 		key = "row", role = "overseer.worktreeRow", title = details(worktree, branch),
-		aria = label .. (if worktree.agent == "waiting" then ", agent waiting for you"
-				elseif worktree.agent == "working" then ", agent working"
+		aria = label .. (if AGENT_STATUS[worktree.agent] then ", " .. string.lower(AGENT_STATUS[worktree.agent].title)
 				elseif worktree.session then ", session open"
 				else ", open session")
 			.. (if worktree.conflicts then ", merge conflicts" elseif worktree.dirty then ", uncommitted changes" else "")
 			.. (if worktree.iced then ", in the Ice Box" else ""),
-		actions = { click = if worktree.deleting then nil else "open=" .. worktree.path, menu = menu },
+		actions = { click = if worktree.deleting then nil else "open-worktree=" .. worktree.path, menu = menu },
 	}, {
 		ui.node("row", { key = "head", role = "overseer.worktreeHead" }, head),
 		text("subtitle", subtitle, "overseer.worktreeSubtitle"),
 	})
 	local children = { summary }
 	for _, tab in ipairs(worktree.tabs or {}) do
+		local agent = AGENT_STATUS[tab.agent]
 		local tabChildren = {
-			dot("dot", if tab.agent == "waiting" then "overseer.dotTabWaiting"
-				elseif tab.agent == "working" then "overseer.dotTabAgent"
-				elseif tab.busy then "overseer.dotBusy"
-				else "overseer.dotTab"),
+			dot("dot", if agent then agent.tabRole elseif tab.busy then "overseer.dotBusy" else "overseer.dotTab"),
 			text("name", tab.name, "overseer.tabName", { grow = 1 }),
 		}
-		-- The pulsing dot already says an agent is working; waiting needs you, so it is spelled out.
-		if tab.agent == "waiting" then
-			table.insert(tabChildren, text("state", "waiting", "overseer.waiting"))
-		elseif not tab.agent and tab.busy then
+		-- A pulsing dot already says an agent is working; anything that needs you is spelled out.
+		if agent and agent.label then
+			table.insert(tabChildren, text("state", agent.label, agent.labelRole))
+		elseif not agent and tab.busy then
 			table.insert(tabChildren, text("busy", "running", "overseer.busy"))
 		end
 		if not tab.pane then
@@ -250,21 +278,19 @@ function View.render(model)
 	}
 	if model.confirmation then
 		local request = model.confirmation
-		local deleting = request.kind == "delete"
+		local copy = CONFIRMATIONS[request.kind]
 		local buttons = {
-			button("cancel", "Cancel", "cancel=" .. request.id, "Keep this worktree and session"),
+			button("cancel", "Cancel", "cancel=" .. request.id, copy.keep),
 		}
 		if not request.checking then
-			table.insert(buttons, button("confirm", if deleting then "Delete worktree" else "Close session",
+			table.insert(buttons, button("confirm", copy.confirm,
 				"confirm=" .. request.id, "Confirm " .. request.label, "overseer.dangerButton"))
 		end
 		table.insert(children, ui.node("col", { key = "confirmation", role = "overseer.confirmation" }, {
-			text("title", if deleting then "Delete worktree?" else "Close session?", "overseer.formHeading"),
+			text("title", copy.title, "overseer.formHeading"),
 			text("name", request.label, "overseer.branch"),
 			text("path", request.path, "overseer.hint"),
-			text("detail", if deleting
-				then "Removes this directory, including ignored files. Keeps Git branches. Its session closes after successful removal. Stop file-writing tasks first."
-				else "Stops all running programs and closes this session's tabs. Keeps the worktree files and Git branches.", "overseer.hint"),
+			text("detail", copy.detail, "overseer.hint"),
 			text("status", if request.checking then "Checking worktree..." else "", "overseer.hint"),
 			ui.node("row", { key = "buttons", role = "overseer.formButtons" }, buttons),
 		}))
@@ -281,7 +307,7 @@ function View.render(model)
 		local projectChildren = {
 			ui.node("row", {
 				key = "header", role = "overseer.projectHeader",
-				actions = { menu = { "Change base branch", "Set Linear workspace" } },
+				actions = { menu = { "Change base branch", "Set Linear workspace", "Remove project" } },
 			}, {
 				button("collapse", (if collapsed then "▸  " else "▾  ") .. project.name,
 					"collapse=" .. project.id, (if collapsed then "Expand " else "Collapse ") .. project.name .. "\n" .. project.path,
