@@ -59,7 +59,8 @@ You need macOS and:
 | [Worktrunk](https://worktrunk.dev) (`wt`), Git, Bash | everything | tested with wt 0.40.0 |
 | [GitHub CLI](https://cli.github.com) (`gh`), signed in | PR badges, Visualize PR | optional |
 | [Linear CLI](https://github.com/schpet/linear-cli) (`linear`), signed in | ticket links | optional |
-| [omp](https://omp.sh) | ticket agents, Visualize PR | optional |
+| [omp](https://omp.sh) | ticket agents, Visualize PR, [coordination](#coordination) | optional |
+| [pi-intercom](https://github.com/nicobailon/pi-intercom) omp plugin, [Bun](https://bun.sh) | [coordination](#coordination) | optional |
 
 ```sh
 git clone https://github.com/mmnavarr/overseer.git
@@ -69,10 +70,11 @@ cd overseer
 
 Linking reloads the plugin whenever the source changes. Use `tern plugin install "$PWD"` instead if you'd rather have a frozen copy.
 
-To let omp agents create [sub-worktrees](#sub-worktrees), link the skill once:
+For omp agents to create [sub-worktrees](#sub-worktrees) and [coordinate](#coordination) with them, link the skill and the extension once:
 
 ```sh
 ln -s "$PWD/skills/overseer-subworktree" ~/.omp/agent/skills/overseer-subworktree
+ln -s "$PWD/omp/overseer-rails" ~/.omp/agent/extensions/overseer-rails
 ```
 
 ## Use it
@@ -118,13 +120,26 @@ A worktree can own others: an agent working on one task that spins off a branch 
   │ …
 ```
 
-- **Agents create them** with the `overseer-subworktree` skill (link it once, see [Install](#install)): `overseer-subworktree <branch> [--base <ref>]`, run inside the owning worktree. The owner is wherever it runs, never an argument, so an agent can only attach work to the worktree it's in. It runs `wt switch --create` with your hooks and approvals as usual.
+- **Agents create them** with the `overseer-subworktree` skill (link it once, see [Install](#install)): `overseer-subworktree <branch> [--base <ref>] [--brief -]`, run inside the owning worktree. The owner is wherever it runs, never an argument, so an agent can only attach work to the worktree it's in. It runs `wt switch --create` with your hooks and approvals as usual. With `--brief`, Overseer starts an omp session in the new worktree with the brief as its first prompt.
 - **You adopt existing ones** with **Move under…**, which lists the top-level worktrees; **Make top-level** puts one back.
 - **The badge folds them.** `▾ 5` shows how many; click it to fold. Folded, it takes the color of the sub-worktree agent that most needs you (amber waiting, red failed, green done, accent working). The worktree you're in always shows.
 - **Each keeps its own session**, menu, PR and ticket links. Nesting is one level deep: a sub-worktree of a sub-worktree shows under the top owner.
 - **Deleting the owner asks.** **Delete only this** leaves the sub-worktrees, which move to the top level. **Delete all** also removes every sub-worktree without uncommitted changes; one with changes is kept and moves up. The owner still gets its usual Force delete check.
 - **Ice Box:** parking the owner parks its sub-worktrees with it.
 - The link is Worktrunk's per-branch variable `overseer-parent` on the sub-worktree's branch (`wt config state vars get --branch=<branch> overseer-parent`), so agents and `wt` see it too. Git branches stay independent: nesting is for the panel, not ancestry.
+
+### Coordination
+
+The omp sessions of a worktree and its sub-worktrees keep each other informed, whichever side does the work. It needs the `overseer-rails` omp extension and the pi-intercom plugin (see [Install](#install)).
+
+- **Before each prompt**, a session hears what changed in its parent and sub-worktrees since it last looked: new commits, files both branches edit, and the note each session left when its last turn started or ended. It's hidden context, marked as information rather than instructions.
+- **Overseer wakes the parent** when a sub-worktree's session is waiting for an answer, its turn failed, or it finished a turn with a pull request open. A sub-worktree built on its parent's branch (`--base <parent>`) hears when that branch moves, so it can rebase. These come from Tern's agent states and Git, never from what an agent wrote, and a session gets at most one a minute (extras arrive together).
+- **Agents message each other** with the `overseer_family` tool: `status` lists the family with intercom addresses, `message` sends to the parent, every sub-worktree, or one branch. For an answer before continuing, they use intercom `ask`.
+- **You brief the family** with **Brief sub-worktrees…** on the parent's menu. A sub-worktree without a session gets it when it starts one.
+- **The overseer session** is the one Overseer's messages for a worktree go to. A worktree with one omp session uses it; with several, right-click a tab and choose **Make overseer session**. Its tab shows an **overseer** badge.
+- **The panel shows it:** **N new** on a row counts Overseer's messages since you last looked at its session, and a sub-worktree's subtitle says when its session last finished a turn.
+
+Decisions made between sessions end up in their transcripts, so omp's memory keeps them; the coordination itself needs no store of its own.
 
 ### Visualize a PR
 
@@ -205,7 +220,9 @@ When debugging an overrun, read the log: `exceeded its budget; paused … hook="
 | `host.luau`, `input.luau` | The native form block and its text input. |
 | `styles.css`, `icons.css` | Panel layout and status marks only: Tern's kinds draw buttons, badges, cards and menus themselves. The canvas has no `font` prop, so `styles.css` sets the panel in the UI face (`--sans`) and branches and paths back in `--mono`. `icons.css` is **generated** by `icons/generate-css.py` (plugin stylesheets can't load files, so icons are embedded as data URIs). |
 | `skills/visual-pr/` | HumanLayer's visual-pr skill, vendored unchanged (MIT). |
-| `skills/overseer-subworktree/` | The omp skill and script agents use to create a sub-worktree of the worktree they run in. |
+| `skills/overseer-subworktree/` | The omp skill and script agents use to create a sub-worktree of the worktree they run in, optionally with a brief for its own session. |
+| `omp/overseer-rails/index.ts` | The omp extension behind [coordination](#coordination): family summary before each prompt, notes on pi-intercom's shared board, the `overseer_family` tool. |
+| `intercom.luau` | Overseer's sender: resolves a pane to its omp session with `tern inspect`, then runs pi-intercom's CLI as `overseer`. |
 | `tests/test_worktree_operation.py`, `tests/test_subworktree.py` | Real Git/Worktrunk tests for the helper and the sub-worktree script. |
 
 ### State
@@ -222,6 +239,9 @@ Tern's plugin KV (`~/Library/Application Support/Tern/plugin-data/overseer/kv.js
 | `panel-open`, `panel-share` | `boolean`, `number` | Whether you want the Projects panel shown (the shortcut sets it), and its width as a share of the tab. |
 | `pending-form:<pane>`, `form:<token>` | `{token, mode, project, path?, response?, launched?}`, the form's answer | An open form's request, keyed by its pane, and the answer the form block posts. `forms` moves the answer into the request (`response`) so a reload resumes it. |
 | `agents-finished` | `{[paneId]: "done" \| "failed"}` | Agent turns that ended while their tab wasn't shown. Cleared when the tab is shown, the agent starts again, or the pane closes. |
+| `rails` | `{queue, unread, sentAt, checkin, told}` | Coordination relays; see [Flows](#flows). |
+
+Shared with agents through Git config (Worktrunk's per-branch variables): `overseer-parent` (sub-worktree links) and `overseer-lead` (the pane id of a worktree's overseer session).
 
 Files under `tern.plugin.data`: `creation-<id>.status` and `removal-<id>.status` receipts written by the helper, and the `visual-pr/<project>-<pr>-<headsha>.md` outline cache.
 
@@ -229,9 +249,17 @@ In-memory only: the per-project `cache` (worktrees, PRs, gone paths with open se
 
 ### Flows
 
-**Refresh.** `refresh` runs `wt list --format=json` per project, beside `refreshParents` (`wt config state get --format=json`, keeping the `overseer-parent` vars as `entry.parents`; a failed read keeps the last links), then `refreshPullRequests` (one `gh pr list` per GitHub project, at most every 2 minutes, immediately after ↻ or a worktree set change). An open panel refreshes every 15 s from `tick`.
+**Refresh.** `refresh` runs `wt list --format=json` per project, beside `refreshLinks` (`wt config state get --format=json`, keeping the `overseer-parent` vars as `entry.parents` and `overseer-lead` as `entry.leads`; a failed read keeps the last links), then `refreshPullRequests` (one `gh pr list` per GitHub project, at most every 2 minutes, immediately after ↻ or a worktree set change). An open panel refreshes every 15 s from `tick`, a hidden one every 60 s so the coordination relays keep working.
 
-**Sub-worktrees.** `owners(entry)` maps each worktree to the top of its `overseer-parent` chain among the listed worktrees (a link past the listing stops there, a cycle or a primary checkout as child stays on top). `model` puts owned worktrees in their owner's `children` (Ice Box ones last; an iced owner parks them; `folded` is in memory) with `childAgent` the most urgent agent among them; the view draws them in a `c<hex>` column after the owner's group, so path recovery (`w<hex>.row`) works unchanged. **Move under…** offers only top-level worktrees (`cx:pick`), and both it and **Make top-level** go through `setParent`: an optimistic `entry.parents` update, `wt config state vars set|clear`, then `refreshParents`. Deleting an owner opens the `delete-family` confirmation; **Delete all** queues one `beginRemoval` per sub-worktree with `keepIfDirty` (a dirty one is kept with a toast instead of asking) and then the owner's own.
+**Coordination.** Three parts, one shared vocabulary (the `overseer-parent`/`overseer-lead` branch variables and pi-intercom):
+
+- *The omp extension* (`omp/overseer-rails/index.ts`) runs in each interactive omp session in a Tern pane (subagents and the advisor are headless and skip it). `before_agent_start` reads the family from git config (`worktrunk.state.<branch>.vars.*`, milliseconds where `wt` takes ~0.4 s), diffs each relative's branch tip against what this session last saw (kept as `overseer-rails.seen` session entries, so it survives resume), adds the latest note from the board, and flags files both branches change against `origin/HEAD`. Notes live in pi-intercom's extension state `overseer-rails/v1` (newest 80, well under its 64 KiB limit; the elected owner commits, others publish to it). `overseer_family` resolves a relative's lead pane to its intercom address with `tern inspect --json` (the pane's `omp_session_file` names the omp session id, which is pi-intercom's default address) and sends through pi-intercom's outbox.
+- *Overseer's relays* (`window.luau`, "Coordination rails"): `onAgentChange` (from `agent_state`/`agent_finished`) records check-ins and relays a sub-worktree's lead going waiting or failed, and remembers a finished turn so `noticeFinished` relays it once its PR is known (once per PR and head commit, within 15 minutes). `noticeMoves` compares each listing's head commits with the last: a parent that moved notifies children containing its old tip when that tip isn't on the base branch. `tell` queues per worktree; `flushRails` sends to the worktree's lead (`leadOf`: `overseer-lead` while its agent runs, else the only agent) at most once a minute per pane, three attempts. `intercom.luau` resolves the pane with `tern inspect` and runs pi-intercom's CLI as `overseer`. `syncLeads` keeps `overseer-lead` true for worktrees in a family.
+- *Briefs*: `overseer-subworktree --brief` writes `overseer-brief.md` into the new worktree's private Git directory; `startBriefs` renames it to `overseer-brief.started.md` (so a refresh can't start it twice) and runs `tern new session|tab … -- omp @<file>` without switching you away, binding a new session to the worktree.
+
+Kept in kv `rails` (times are `os.time()` seconds): `queue`, `unread`, `sentAt`, `checkin`, `told`. `reconcileGone` drops gone worktrees' records; rate marks expire after a minute.
+
+**Sub-worktrees.** `owners(entry)` maps each worktree to the top of its `overseer-parent` chain among the listed worktrees (a link past the listing stops there, a cycle or a primary checkout as child stays on top). `model` puts owned worktrees in their owner's `children` (Ice Box ones last; an iced owner parks them; `folded` is in memory) with `childAgent` the most urgent agent among them; the view draws them in a `c<hex>` column after the owner's group, so path recovery (`w<hex>.row`) works unchanged. **Move under…** offers only top-level worktrees (`cx:pick`), and both it and **Make top-level** go through `setParent`: an optimistic `entry.parents` update, `wt config state vars set|clear`, then `refreshLinks`. Deleting an owner opens the `delete-family` confirmation; **Delete all** queues one `beginRemoval` per sub-worktree with `keepIfDirty` (a dirty one is kept with a toast instead of asking) and then the owner's own.
 
 **Gone worktrees.** After each successful listing, `reconcileGone` treats a recorded path that isn't listed, isn't being deleted and isn't on disk as removed outside Overseer. It drops the path's `worktree-names` and `icebox` entries. If the path's bound session is still open it goes in `entry.gone`, and `model` adds it as a `gone` row (`goneNode` in the view: click switches to the session, the menu offers only **Close session**). Otherwise the binding is dropped. Never closing these sessions automatically is deliberate: an agent that removes its own worktree would be killed before you read its reply.
 
@@ -264,7 +292,7 @@ Run the helper's tests (they use temporary repos, config and approvals):
 ```sh
 python3 -B tests/test_worktree_operation.py -v
 python3 -B tests/test_subworktree.py -v
-bash -n worktree-operation.sh
+bash -n worktree-operation.sh skills/overseer-subworktree/overseer-subworktree
 ```
 
 Smoke-test UI changes in an **isolated Tern window** so your real sessions are untouched:

@@ -45,10 +45,10 @@ class SubworktreeTests(unittest.TestCase):
         self.parent = self.root / "parent é's"
         self.git("worktree", "add", "-b", "feature/lurker", str(self.parent))
 
-    def run_command(self, *args, cwd, check=True):
+    def run_command(self, *args, cwd, check=True, stdin=""):
         result = subprocess.run(
             [str(arg) for arg in args], cwd=cwd, env=self.env,
-            input="", capture_output=True, text=True, timeout=60,
+            input=stdin, capture_output=True, text=True, timeout=60,
         )
         if check:
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -80,6 +80,23 @@ class SubworktreeTests(unittest.TestCase):
         self.run_command(SCRIPT, "fix/stacked", "--base", "feature/lurker", cwd=self.parent)
         self.assertEqual(self.git("rev-parse", "fix/stacked"), self.git("rev-parse", "feature/lurker"))
         self.assertEqual(self.parent_of("fix/stacked"), "feature/lurker")
+
+    def test_brief_from_stdin_lands_in_the_private_git_dir_not_the_worktree(self):
+        brief = "Fix the cache TTL.\nReport back with overseer_family when the PR is open.\n"
+        result = self.run_command(SCRIPT, "fix/brief", "--brief", "-", cwd=self.parent, stdin=brief)
+        created = Path(result.stdout.strip().splitlines()[-1])
+        git_dir = Path(self.git("rev-parse", "--absolute-git-dir", cwd=created))
+        self.assertEqual((git_dir / "overseer-brief.md").read_text(), brief)
+        self.assertEqual(self.git("status", "--porcelain", cwd=created), "")
+        # The parent's private dir stays untouched.
+        parent_dir = Path(self.git("rev-parse", "--absolute-git-dir", cwd=self.parent))
+        self.assertFalse((parent_dir / "overseer-brief.md").exists())
+
+    def test_empty_or_missing_brief_creates_nothing(self):
+        for args, stdin in ((["--brief", "-"], " \n\t\n"), (["--brief", str(self.root / "missing.md")], "")):
+            result = self.run_command(SCRIPT, "fix/no-brief", *args, cwd=self.parent, check=False, stdin=stdin)
+            self.assertNotEqual(result.returncode, 0, args)
+            self.assertNotIn("fix/no-brief", self.branches(), args)
 
     def test_refuses_a_detached_parent_without_creating_anything(self):
         self.git("checkout", "--detach", cwd=self.parent)

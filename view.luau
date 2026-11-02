@@ -24,6 +24,13 @@ function View.projectId(node)
 	return unhex(type(node) == "string" and node:match("%.p(%x+)%.header$") or nil)
 end
 
+-- A tab row's worktree path and tab id, from its node id (`…w<hex>.tab<id>`).
+function View.tabTarget(node)
+	if type(node) ~= "string" then return nil, nil end
+	local hex, tab = node:match("%.w(%x+)%.tab(%d+)$")
+	return unhex(hex), tonumber(tab)
+end
+
 local function text(key, value, role, props)
 	props = props or {}
 	props.key, props.text, props.role = key, value, role
@@ -222,13 +229,21 @@ local function appendTabs(children, tabs)
 		elseif not agent and tab.busy then
 			table.insert(tabChildren, ui.node("text", { key = "busy", basis = "content", spans = { ui.span("running", "warning") } }))
 		end
+		-- The session Overseer's messages for this worktree go to.
+		if tab.lead then
+			table.insert(tabChildren, badge("lead", "overseer", "accent",
+				"Overseer session: Overseer's messages for this worktree go here"))
+		end
 		if not tab.pane then
 			table.insert(tabChildren, ui.node("text", { key = "unavailable", basis = "content", spans = { ui.span("no pane", "muted") } }))
 		end
 		table.insert(children, ui.node("row", {
-			key = "tab" .. tostring(tab.id), role = "overseer.tabRow",
+			key = "tab" .. string.format("%d", tab.id), role = "overseer.tabRow",
 			title = if tab.pane then "Focus " .. tab.name else "This tab has no focusable pane",
-			actions = if tab.pane then { click = "tab=" .. tostring(tab.pane) } else nil,
+			actions = {
+				click = if tab.pane then "tab=" .. tostring(tab.pane) else nil,
+				menu = if tab.canLead then { { id = "make-lead", label = "Make overseer session", icon = "eye" } } else nil,
+			},
 		}, tabChildren))
 	end
 end
@@ -267,6 +282,9 @@ local function worktreeMenu(worktree)
 	local menu = {}
 	if worktree.pr then table.insert(menu, { id = "visualize", label = "Visualize PR", icon = "merge" }) end
 	table.insert(menu, { id = "rename", label = "Rename…", icon = "pen" })
+	if worktree.children then
+		table.insert(menu, { id = "brief-children", label = "Brief sub-worktrees…", icon = "message" })
+	end
 	if not worktree.is_main then
 		table.insert(menu, if worktree.iced
 			then { id = "icebox-remove", label = "Remove from Ice Box", icon = "box" }
@@ -313,6 +331,11 @@ local function worktreeNode(worktree, activePath)
 			actions = { click = "fold=" .. worktree.path },
 		}))
 	end
+	-- Messages Overseer passed to this worktree's session since you last looked at it.
+	if worktree.unread then
+		table.insert(head, badge("unread", tostring(worktree.unread) .. " new", "accent",
+			plural(worktree.unread, "Overseer update") .. " for this worktree's session since you last looked"))
+	end
 	-- Pushes the remaining badges to the row's right edge.
 	table.insert(head, ui.node("row", { key = "spacer", grow = 1 }, {}))
 	if worktree.conflicts then
@@ -350,6 +373,8 @@ local function worktreeNode(worktree, activePath)
 	local subtitle = if worktree.displayName then branch
 		elseif worktree.is_main then "primary checkout · " .. basename(worktree.path)
 		else basename(worktree.path)
+	-- A sub-worktree also says when its session last finished a turn.
+	if worktree.checkin then subtitle ..= " · checked in " .. worktree.checkin end
 	local summary = ui.node("col", {
 		key = "row", role = "overseer.worktreeRow", title = details(worktree, branch),
 		aria = label .. (if AGENT_STATUS[worktree.agent] then ", " .. string.lower(AGENT_STATUS[worktree.agent].title)

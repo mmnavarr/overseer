@@ -3,6 +3,7 @@ local wt = require("./worktrunk")
 local view = require("./view")
 local visualize = require("./visualize")
 local budget = require("./budget")
+local intercom = require("./intercom")
 
 local cache = {}
 local inflight = {}
@@ -23,6 +24,8 @@ local sequence = 0
 local linearDefault
 -- Defined after forms(); openForm starts it.
 local watchForms
+-- Defined with the coordination rails; refreshes call them.
+local railsAfterListing, railsAfterLinks, railsAfterPullRequests
 
 local function records(key)
 	local value = tern.kv.get(key)
@@ -189,12 +192,17 @@ local function tabRows(cx, activity)
 			table.insert(panesByTab[pane.tab], pane)
 		end
 	end
+	local agentPanes = {}
+	for _, agent in cx.agents:list() do
+		if agent.state ~= "exited" then agentPanes[agent.pane] = true end
+	end
 	local rows = {}
 	for _, tab in cx.session:tabs() do
 		local panes = panesByTab[tab.id] or {}
-		local chosen, hasAgent = nil, false
+		local chosen, hasAgent, agentPane = nil, false, nil
 		for _, pane in panes do
 			if pane.kind == "agent" then hasAgent = true end
+			if agentPanes[pane.pane] and not agentPane then agentPane = pane.pane end
 		end
 		for _, pane in panes do
 			if pane.pane == tab.pane and pane.kind ~= "plugin" then chosen = pane; break end
@@ -216,7 +224,7 @@ local function tabRows(cx, activity)
 		local key = tostring(tab.session)
 		rows[key] = rows[key] or {}
 		table.insert(rows[key], {
-			id = tab.id, pane = tab.pane,
+			id = tab.id, pane = tab.pane, agentPane = agentPane,
 			name = if tab.name and tab.name ~= "" then tab.name elseif title and title ~= "" then title else "Terminal",
 			agent = activity.tabs[tab.id],
 			-- An agent block keeps its tab busy even while idle; its state says more.
@@ -271,6 +279,77 @@ local function owners(entry)
 	return result
 end
 
+-- Coordination rails. Overseer tells a worktree's overseer session (its omp
+-- session running the overseer-rails extension, reachable over pi-intercom at
+-- its omp session id) what happens in its family of sub-worktrees.
+-- Kept in kv "rails", keyed by worktree path unless noted; times are os.time()
+-- seconds, so they survive restarts:
+--   queue    messages waiting for the worktree's overseer session or the rate limit
+--   unread   messages delivered since you last looked at the worktree's session
+--   sentAt   per pane id: when that session last got a message
+--   checkin  when an agent turn last ended in the worktree
+--   told     what its parent was already told: waiting, failed, pr ("number@head")
+local function railsState()
+	local state = records("rails")
+	for _, key in { "queue", "unread", "sentAt", "checkin", "told" } do
+		if type(state[key]) ~= "table" then state[key] = {} end
+	end
+	return state
+end
+
+-- macOS reaches /tmp, /var and /etc through /private; Worktrunk reports the
+-- resolved path and agents may report either, so both compare without it.
+local function comparable(path)
+	local rest = string.match(path, "^/private(/[^/]+)")
+	if rest == "/tmp" or rest == "/var" or rest == "/etc" then return string.sub(path, 9) end
+	return path
+end
+
+-- This window's running agent blocks per listed worktree path, matched by
+-- working directory (the deepest worktree containing it).
+local function worktreeAgents(cx)
+	local paths = {}
+	for _, entry in cache do
+		for _, worktree in (entry.worktrees or {}) do table.insert(paths, worktree.path) end
+	end
+	local byPath = {}
+	for _, agent in cx.agents:list() do
+		if agent.state ~= "exited" and type(agent.cwd) == "string" then
+			local best, cwd = nil, comparable(agent.cwd)
+			for _, path in paths do
+				local root = comparable(path)
+				if (cwd == root or string.sub(cwd, 1, #root + 1) == root .. "/") and (not best or #path > #best) then
+					best = path
+				end
+			end
+			if best then
+				byPath[best] = byPath[best] or {}
+				table.insert(byPath[best], agent)
+			end
+		end
+	end
+	return byPath
+end
+
+-- The pane of a worktree's overseer session: its `overseer-lead` while that
+-- agent runs here, else its only running agent, else nil.
+local function leadOf(entry, worktree, agents)
+	local live = agents[worktree.path] or {}
+	local lead = worktree.branch and entry and entry.leads and entry.leads[worktree.branch]
+	for _, agent in live do
+		if tostring(agent.pane) == lead then return agent.pane end
+	end
+	return if #live == 1 then live[1].pane else nil
+end
+
+local function ago(seconds)
+	local minutes = math.floor((os.time() - seconds) / 60)
+	if minutes < 1 then return "just now" end
+	if minutes < 60 then return tostring(minutes) .. "m ago" end
+	local hours = math.floor(minutes / 60)
+	return if hours < 48 then tostring(hours) .. "h ago" else tostring(math.floor(hours / 24)) .. "d ago"
+end
+
 local function model(cx)
 	local sessions = sessionsById(cx)
 	local names = records("worktree-names")
@@ -279,6 +358,9 @@ local function model(cx)
 	local showIcebox = tern.kv.get("show-icebox") ~= false
 	local activity = agentActivity(cx)
 	local tabs = tabRows(cx, activity)
+	local agents = worktreeAgents(cx)
+	local rails = railsState()
+	local seen = false
 	local result = {
 		projects = {}, collapsed = collapsed, confirmation = confirmation,
 		showIcebox = showIcebox, refreshing = spinning,
@@ -307,6 +389,13 @@ local function model(cx)
 			item.active = session ~= nil and session.id == current.id
 			if item.active then result.activePath = worktree.path end
 			item.iced = not worktree.is_main and icebox[project.id] ~= nil and icebox[project.id][worktree.path] == true
+			item.lead = leadOf(entry, worktree, agents)
+			item.agentCount = #(agents[worktree.path] or {})
+			-- Looking at a worktree's session is reading what Overseer told it.
+			if item.active and rails.unread[worktree.path] then
+				rails.unread[worktree.path], seen = nil, true
+			end
+			item.unread = rails.unread[worktree.path]
 			table.insert(items, item)
 			byPath[worktree.path] = item
 		end
@@ -318,8 +407,21 @@ local function model(cx)
 				owner.family = owner.family or {}
 				table.insert(owner.family, item)
 				if item.active then owner.activeChild = true end
+				local checkin = rails.checkin[item.path]
+				-- Wall-clock seconds only (values from before that change are ignored).
+				item.checkin = if type(checkin) == "number" and checkin > 1e9 then ago(checkin) else nil
 			end
 		end
+		-- The overseer session's tab is marked once there's a reason to tell
+		-- sessions apart: several agents, or a family Overseer relays for.
+		for _, item in items do
+			local family = item.parentLink ~= nil or item.family ~= nil
+			for _, tab in item.tabs do
+				tab.lead = item.lead ~= nil and tab.agentPane == item.lead and (family or item.agentCount > 1)
+				tab.canLead = tab.agentPane ~= nil and tab.agentPane ~= item.lead and item.agentCount > 1
+			end
+		end
+		if seen then tern.kv.set("rails", rails) end
 		local iced = {}
 		for _, item in items do
 			if not ownerOf[item.path] then
@@ -476,23 +578,26 @@ local function refreshPullRequests(project, entry)
 			tern.log.warn("Pull requests unavailable for " .. project.name .. ": " .. tostring(err))
 		end
 		if cx then redraw(cx) end
+		if found and cx then railsAfterPullRequests(cx, project, entry) end
 	end)
 end
 
--- Sub-worktree links (`overseer-parent`), read beside each listing. A failed
--- read keeps the last links, so rows don't jump out of their parents.
-local function refreshParents(project, entry)
-	if entry.parentsLoading then return end
-	entry.parentsLoading = true
-	wt.parents(project, function(found, err, cx)
-		entry.parentsLoading = false
+-- Sub-worktree links (`overseer-parent`) and overseer sessions
+-- (`overseer-lead`), read beside each listing. A failed read keeps the last
+-- links, so rows don't jump out of their parents.
+local function refreshLinks(project, entry)
+	if entry.linksLoading then return end
+	entry.linksLoading = true
+	wt.links(project, function(found, err, cx)
+		entry.linksLoading = false
 		if found then
-			entry.parents, entry.parentsError = found, nil
-		elseif err ~= entry.parentsError then
-			entry.parentsError = err
+			entry.parents, entry.leads, entry.linksError = found.parents, found.leads, nil
+		elseif err ~= entry.linksError then
+			entry.linksError = err
 			tern.log.warn("Sub-worktree links unavailable for " .. project.name .. ": " .. tostring(err))
 		end
 		if cx then redraw(cx) end
+		if found and cx then railsAfterLinks(cx, project, entry) end
 	end)
 end
 
@@ -546,6 +651,16 @@ local function reconcileGone(cx, project, entry)
 		end
 		if dropped then tern.kv.set(key, store) end
 	end
+	-- Rails records of gone worktrees (queues drain themselves in flushRails).
+	local rails, pruned = railsState(), false
+	for _, key in { "told", "checkin", "unread" } do
+		for path in rails[key] do
+			if gone(path) then
+				rails[key][path], pruned = nil, true
+			end
+		end
+	end
+	if pruned then tern.kv.set("rails", rails) end
 end
 
 -- `done` runs once every worktree listing this call started has finished.
@@ -562,11 +677,16 @@ local function refresh(cx, done)
 		if not entry.loading then
 			entry.loading = true
 			pending += 1
-			refreshParents(project, entry)
+			refreshLinks(project, entry)
 			wt.list(project, function(worktrees, err, nextCx)
 				entry.loading, entry.error = false, err
+				local previous = {}
+				for _, tree in entry.worktrees do previous[tree.path] = tree.head end
 				if worktrees then entry.worktrees = worktrees end
-				if worktrees and nextCx then reconcileGone(nextCx, project, entry) end
+				if worktrees and nextCx then
+					reconcileGone(nextCx, project, entry)
+					railsAfterListing(nextCx, project, entry, previous)
+				end
 				pending -= 1
 				if pending == 0 and done and nextCx then done(nextCx) end
 				if nextCx then redraw(nextCx) end
@@ -813,6 +933,383 @@ local function ensureSession(cx, project, path, branch)
 		tern.kv.set("sessions", bindings)
 	end
 	follow(cx)
+end
+
+-- Coordination rails, the relays: what happens in a sub-worktree's session
+-- reaches its parent's overseer session, and a parent branch moving reaches
+-- the sub-worktrees built on it. Decisions come from Tern's agent states and
+-- git, never from what an agent wrote; quoted text is only passed along.
+
+-- A session gets at most one message a minute; what comes sooner waits in its
+-- queue and goes out together. Messages you send from Projects skip the wait.
+local RAILS_RATE_S = 60
+local RAILS_QUEUE_MAX = 8
+local RAILS_ATTEMPTS = 3
+-- A finished turn is relayed once its pull request is known, if that's within this long.
+local RAILS_PR_WAIT_S = 15 * 60
+
+local function paneKey(pane)
+	return string.format("%d", pane)
+end
+
+local function oneLine(text, limit)
+	local flat = string.gsub(string.gsub(text or "", "%s+", " "), "^ ", "")
+	local cut = utf8.offset(flat, limit)
+	return if cut and cut <= #flat then string.sub(flat, 1, cut - 1) .. "…" else flat
+end
+
+local function treeLabel(project, worktree)
+	local name = (records("worktree-names")[project.id] or {})[worktree.path]
+	local branch = worktree.branch or "detached HEAD"
+	return if name then branch .. " (" .. name .. ")" else branch
+end
+
+-- Whether a worktree takes part in a family: a parent link, or sub-worktrees.
+local function inFamily(entry, worktree)
+	local branch = worktree.branch
+	if not branch or not entry.parents then return false end
+	if entry.parents[branch] then return true end
+	for _, parent in entry.parents do
+		if parent == branch then return true end
+	end
+	return false
+end
+
+local function ownerTree(entry, worktree)
+	local ownerPath = owners(entry)[worktree.path]
+	for _, tree in (ownerPath and entry.worktrees or {}) do
+		if tree.path == ownerPath then return tree end
+	end
+	return nil
+end
+
+-- Sends what waits in the queues to the worktrees' overseer sessions.
+local function flushRails(cx)
+	local rails = railsState()
+	local changed = false
+	-- Rate-limit marks only matter for RAILS_RATE_S; panes come and go.
+	for pane, at in rails.sentAt do
+		if type(at) ~= "number" or os.time() - at >= RAILS_RATE_S then rails.sentAt[pane], changed = nil, true end
+	end
+	if next(rails.queue) == nil then
+		if changed then tern.kv.set("rails", rails) end
+		return
+	end
+	local agents = worktreeAgents(cx)
+	for path, queue in rails.queue do
+		local project, worktree = findWorktree(path)
+		local pane = project and leadOf(cache[project.id], worktree, agents)
+		local now = false
+		for _, item in queue do now = now or item.now == true end
+		if not project and not tern.fs.exists(path) then
+			rails.queue[path], changed = nil, true
+		elseif pane and (now or os.time() - (rails.sentAt[paneKey(pane)] or 0) >= RAILS_RATE_S) then
+			rails.queue[path], changed = nil, true
+			rails.sentAt[paneKey(pane)] = os.time()
+			local texts, attempts = {}, 0
+			for _, item in queue do
+				table.insert(texts, item.text)
+				attempts = math.max(attempts, item.attempts or 0)
+			end
+			local text = if #texts == 1 then texts[1] else "Overseer: " .. #texts .. " updates.\n\n" .. table.concat(texts, "\n\n")
+			intercom.send(cx:window_key(), pane, text, function(ok, err, nextCx)
+				local after = railsState()
+				if ok then
+					after.unread[path] = (after.unread[path] or 0) + 1
+				else
+					tern.log.warn("Overseer: couldn't message the overseer session of " .. path .. ": " .. tostring(err))
+					if attempts + 1 < RAILS_ATTEMPTS then
+						local back = after.queue[path] or {}
+						for index, item in queue do
+							item.attempts = attempts + 1
+							table.insert(back, index, item)
+						end
+						after.queue[path] = back
+					end
+				end
+				tern.kv.set("rails", after)
+				if nextCx then redraw(nextCx) end
+			end)
+		end
+	end
+	if changed then tern.kv.set("rails", rails) end
+end
+
+-- Queues `text` for the overseer session of the worktree at `path`; it goes
+-- out once the worktree has one and the rate limit allows (`now` skips the wait).
+local function tell(cx, path, text, now)
+	local rails = railsState()
+	local queue = rails.queue[path] or {}
+	table.insert(queue, { text = text, at = os.time(), now = now or nil })
+	while #queue > RAILS_QUEUE_MAX do table.remove(queue, 1) end
+	rails.queue[path] = queue
+	tern.kv.set("rails", rails)
+	flushRails(cx)
+end
+
+-- Keeps `overseer-lead` true for worktrees in a family: a lead whose agent
+-- stopped is cleared, and a worktree with one running agent gets it as lead.
+-- With several and no lead, you pick one (Make overseer session).
+local function syncLeads(cx, project, entry)
+	if not entry.leads or not entry.worktrees then return end
+	local agents = worktreeAgents(cx)
+	entry.leadWrites = entry.leadWrites or {}
+	for _, worktree in entry.worktrees do
+		local branch = worktree.branch
+		if branch and not entry.leadWrites[branch] and inFamily(entry, worktree) then
+			local pane = leadOf(entry, worktree, agents)
+			local value = if pane then paneKey(pane) else nil
+			if value ~= entry.leads[branch] then
+				entry.leads[branch] = value
+				entry.leadWrites[branch] = true
+				wt.set_var(project, branch, wt.LEAD_KEY, value, function(ok, err, nextCx)
+					entry.leadWrites[branch] = nil
+					if not ok then tern.log.warn("Overseer: couldn't save the overseer session of " .. branch .. ": " .. tostring(err)) end
+					if nextCx then
+						flushRails(nextCx)
+						redraw(nextCx)
+					end
+				end)
+			end
+		end
+	end
+end
+
+local function syncAllLeads(cx)
+	for _, project in projects() do
+		local entry = cache[project.id]
+		if entry then syncLeads(cx, project, entry) end
+	end
+	flushRails(cx)
+end
+
+-- Relays finished turns of sub-worktrees whose pull request is known: once per
+-- PR and head commit, and only for turns that ended since Overseer has watched.
+local function noticeFinished(cx, project, entry)
+	local rails, changed = railsState(), false
+	for _, worktree in (entry.worktrees or {}) do
+		local told = rails.told[worktree.path]
+		local pr = worktree.branch and entry.prs and entry.prs[worktree.branch]
+		if told and told.finishedAt then
+			local owner = ownerTree(entry, worktree)
+			local key = pr and tostring(pr.number) .. "@" .. (worktree.head or "")
+			if not owner or os.time() - told.finishedAt > RAILS_PR_WAIT_S then
+				told.finishedAt, changed = nil, true
+			elseif pr and told.pr ~= key then
+				told.pr, told.finishedAt, changed = key, nil, true
+				local said = oneLine(told.lastMessage, 300)
+				tell(cx, owner.path, string.format(
+					"Overseer: sub-worktree %s finished a turn with PR #%s (%s): %s. Its last message: \"%s\"",
+					treeLabel(project, worktree), tostring(pr.number), tostring(pr.state), tostring(pr.url or ""), said))
+			end
+		end
+	end
+	if changed then
+		-- tell() rewrote the store; merge what this pass changed into the latest.
+		local latest = railsState()
+		for path, told in rails.told do latest.told[path] = told end
+		tern.kv.set("rails", latest)
+	end
+end
+
+-- An agent's state changed: record check-ins, and relay a sub-worktree's
+-- overseer session waiting, failing or finishing to its parent.
+local function onAgentChange(cx, pane, kind)
+	local agents = worktreeAgents(cx)
+	local project, entry, worktree, agent = nil, nil, nil, nil
+	for path, list in agents do
+		for _, candidate in list do
+			if candidate.pane == pane then
+				project, worktree = findWorktree(path)
+				entry, agent = project and cache[project.id], candidate
+			end
+		end
+	end
+	if not project then return end
+	local rails = railsState()
+	local told = rails.told[worktree.path] or {}
+	if kind == "working" then
+		-- A new turn: a later wait or failure is news again.
+		told.waiting, told.failed = nil, nil
+	elseif kind ~= "waiting" then
+		rails.checkin[worktree.path] = os.time()
+	end
+	local owner = leadOf(entry, worktree, agents) == pane and ownerTree(entry, worktree)
+	local text = nil
+	local said = oneLine(agent.last_message, 300)
+	local quoted = if said ~= "" then " Its last message: \"" .. said .. "\"" else ""
+	if owner and kind == "waiting" and not told.waiting then
+		told.waiting = true
+		text = string.format(
+			"Overseer: sub-worktree %s is waiting for an answer.%s\nAnswer with the overseer_family tool (to: \"%s\"), or intercom with the address it lists.",
+			treeLabel(project, worktree), quoted, worktree.branch)
+	elseif owner and kind == "failed" and not told.failed then
+		told.failed = true
+		text = string.format("Overseer: sub-worktree %s's turn failed.%s", treeLabel(project, worktree), quoted)
+	elseif owner and kind == "done" then
+		told.finishedAt, told.lastMessage = os.time(), said
+	end
+	rails.told[worktree.path] = told
+	tern.kv.set("rails", rails)
+	if text then tell(cx, owner.path, text) end
+	if kind == "done" then noticeFinished(cx, project, entry) end
+	redraw(cx)
+end
+
+-- A parent branch moved: sub-worktrees built on its earlier commits hear about it.
+local function noticeMoves(project, entry, previous)
+	local ownerOf = owners(entry)
+	for _, parent in entry.worktrees do
+		local old = previous[parent.path]
+		if old and parent.head and old ~= parent.head and parent.branch then
+			for _, child in entry.worktrees do
+				if ownerOf[child.path] == parent.path and child.branch then
+					-- Built on it: the child has the parent's old tip, and that tip isn't on the base branch.
+					wt.is_ancestor(project, old, child.branch, function(inChild)
+						if not inChild then return end
+						wt.is_ancestor(project, old, project.base, function(onBase)
+							if onBase ~= false then return end
+							wt.new_commits(project, old, parent.head, 5, function(lines, count, cx)
+								if not cx then return end
+								tell(cx, child.path, string.format(
+									"Overseer: your parent %s moved: %s (%s). %s is built on it, so it may need rebasing onto %s.",
+									parent.branch, if count == 0 then "history rewritten" else tostring(count) .. " new commit" .. (if count == 1 then "" else "s"),
+									table.concat(lines, "; "), child.branch, parent.branch))
+							end)
+						end)
+					end)
+				end
+			end
+		end
+	end
+end
+
+-- Briefs: overseer-subworktree --brief leaves the sub-task's first prompt as
+-- overseer-brief.md in the new worktree's private git dir.
+local function briefFile(path)
+	local ok, text = pcall(tern.fs.read, path .. "/.git", 4096)
+	local gitdir = ok and type(text) == "string" and string.match(text, "^gitdir:%s*(.-)%s*$")
+	if not gitdir then return nil end
+	if string.sub(gitdir, 1, 1) ~= "/" then gitdir = path .. "/" .. gitdir end
+	return gitdir .. "/overseer-brief.md"
+end
+
+-- Starts an omp session on a brief: in the worktree's session when it has one,
+-- else a new bound session, without taking you away from what you're looking at.
+local function startBrief(cx, project, worktree, file)
+	local okRead, brief = pcall(tern.fs.read, file, 65536)
+	if not okRead or type(brief) ~= "string" then return end
+	local started = string.gsub(file, "%.md$", ".started.md")
+	-- Tern runs the command through your shell; keep the path a single plain word.
+	if string.find(started, "[^%w%._/%-]") then
+		report(cx, "Its git directory path has characters a shell would split: " .. started, "Brief not started")
+		return
+	end
+	-- Move it first, so the next refresh can't start it twice.
+	tern.fs.write(started, brief .. "\n\n---\nOverseer started this session from the brief your parent worktree left. "
+		.. "This worktree (" .. worktree.branch .. ") is its sub-worktree: report back with the overseer_family tool (to: parent).\n")
+	tern.fs.remove(file)
+	local ternBin = wt.find_executable("tern") or "/Applications/Tern.app/Contents/MacOS/tern"
+	local session = boundSession(worktree.path, sessionsById(cx))
+	local argv = { ternBin, "new" }
+	if session then
+		for _, arg in { "tab", string.format("%d", session.id) } do table.insert(argv, arg) end
+	else
+		for _, arg in { "session", project.name .. " / " .. worktree.branch } do table.insert(argv, arg) end
+	end
+	for _, arg in { "--window", cx:window_key(), "--json", "--cwd", worktree.path, "--", "omp", "@" .. started } do
+		table.insert(argv, arg)
+	end
+	local ok, err = pcall(budget.process, "brief start", argv, { timeout_ms = 15000 }, function(result, nextCx)
+		local parsed, value = pcall(tern.json.decode, result.stdout or "")
+		if result.status ~= 0 or not parsed or type(value) ~= "table" then
+			-- Put the brief back for the next refresh to try again.
+			tern.fs.write(file, brief)
+			tern.fs.remove(started)
+			if nextCx then report(nextCx, tostring(result.stderr or "tern new failed"), "Brief not started") end
+			return
+		end
+		if not session and value.session and nextCx then
+			local bindings = records("sessions")
+			local host = nil
+			for _, listed in nextCx.sessions:list() do
+				if listed.id == value.session then host = listed.host end
+			end
+			bindings[worktree.path] = { id = value.session, host = host, project = project.id }
+			tern.kv.set("sessions", bindings)
+		end
+		if nextCx then
+			nextCx:toast("info", "Sub-worktree started", treeLabel(project, worktree) .. " is working on its brief.")
+			redraw(nextCx)
+		end
+	end)
+	if not ok then
+		tern.fs.write(file, brief)
+		tern.fs.remove(started)
+		report(cx, tostring(err), "Brief not started")
+	end
+end
+
+local function startBriefs(cx, project, entry)
+	for _, worktree in entry.worktrees do
+		if worktree.branch and not worktree.is_main then
+			local file = briefFile(worktree.path)
+			if file and tern.fs.exists(file) then startBrief(cx, project, worktree, file) end
+		end
+	end
+end
+
+-- Makes the agent in tab `tabId` the overseer session of the worktree at `path`.
+local function makeLead(cx, path, tabId)
+	local project, worktree = findWorktree(path)
+	if not project or not worktree.branch then report(cx, "Worktree not found. Refresh Projects."); return end
+	local pane = nil
+	for _, agent in (worktreeAgents(cx)[path] or {}) do
+		local info = cx.session:pane(agent.pane)
+		if info and info.tab == tabId then pane = agent.pane end
+	end
+	if not pane then report(cx, "That tab has no running agent."); return end
+	local entry = cache[project.id]
+	entry.leads = entry.leads or {}
+	entry.leads[worktree.branch] = paneKey(pane)
+	redraw(cx)
+	wt.set_var(project, worktree.branch, wt.LEAD_KEY, paneKey(pane), function(ok, err, nextCx)
+		if not ok and nextCx then report(nextCx, err, "Couldn't save the overseer session") end
+		if nextCx then flushRails(nextCx) end
+	end)
+end
+
+-- Sends your message from the Brief sub-worktrees form to every sub-worktree of `path`.
+local function briefChildren(cx, path, message)
+	local project, worktree = findWorktree(path)
+	if not project then return nil, "Worktree is no longer available. Refresh Projects." end
+	local entry = cache[project.id]
+	local ownerOf, sent = owners(entry), 0
+	for _, tree in entry.worktrees do
+		if ownerOf[tree.path] == path then
+			tell(cx, tree.path, "Overseer, passing on a message from the user to every sub-worktree of "
+				.. (worktree.branch or path) .. ":\n\n" .. message, true)
+			sent += 1
+		end
+	end
+	if sent == 0 then return nil, "This worktree has no sub-worktrees." end
+	return sent
+end
+
+function railsAfterListing(cx, project, entry, previous)
+	noticeMoves(project, entry, previous)
+	startBriefs(cx, project, entry)
+	syncLeads(cx, project, entry)
+	flushRails(cx)
+end
+
+function railsAfterLinks(cx, project, entry)
+	syncLeads(cx, project, entry)
+	flushRails(cx)
+end
+
+function railsAfterPullRequests(cx, project, entry)
+	noticeFinished(cx, project, entry)
 end
 
 local function openWorktree(cx, path)
@@ -1097,9 +1594,9 @@ local function setParent(cx, project, branch, parent)
 		entry.parents[branch] = parent
 		redraw(cx)
 	end
-	wt.set_parent(project, branch, parent, function(ok, err, nextCx)
+	wt.set_var(project, branch, wt.PARENT_KEY, parent, function(ok, err, nextCx)
 		if not ok and nextCx then report(nextCx, err, "Couldn't move the worktree") end
-		if entry then refreshParents(project, entry) end
+		if entry then refreshLinks(project, entry) end
 	end)
 end
 
@@ -1463,6 +1960,18 @@ local function changeLinear(cx, pane, request, response)
 	redraw(cx)
 end
 
+-- Brief sub-worktrees: your message goes to each sub-worktree's overseer
+-- session now; one without a session gets it when it starts one.
+local function sendBrief(cx, pane, request, response)
+	local message = type(response.message) == "string" and response.message:match("^%s*(.-)%s*$") or ""
+	if message == "" then rejectForm(cx, pane, "Enter a message."); return end
+	local sent, err = briefChildren(cx, request.path, message)
+	if not sent then rejectForm(cx, pane, err); return end
+	finishForm(cx, pane)
+	cx:toast("info", "Brief sent", "To " .. tostring(sent) .. " sub-worktree" .. (if sent == 1 then "" else "s") .. ".")
+	redraw(cx)
+end
+
 -- The worktree's path is only known once Worktrunk has created it, so the
 -- display name chosen at creation is attached afterwards, by branch.
 local function applyCreatedName(job)
@@ -1521,6 +2030,8 @@ local function answerForm(cx, pane, request, response)
 		changeBase(cx, pane, request, response)
 	elseif request.mode == "linear" and response.mode == "linear" then
 		changeLinear(cx, pane, request, response)
+	elseif request.mode == "brief" and response.mode == "brief" then
+		sendBrief(cx, pane, request, response)
 	else
 		rejectForm(cx, pane, "Invalid form response. Please try again.")
 	end
@@ -1796,6 +2307,13 @@ local function canvasAction(ev, cx)
 		requestProjectRemoval(cx, view.projectId(ev.node))
 	elseif ev.act == "visualize" then
 		visualizePr(cx, view.worktreePath(ev.node))
+	elseif ev.act == "make-lead" then
+		local path, tab = view.tabTarget(ev.node)
+		if path then makeLead(cx, path, tab) else report(cx, "Tab not found. Refresh Projects.") end
+	elseif ev.act == "brief-children" then
+		local project, worktree = findWorktree(view.worktreePath(ev.node))
+		if project then openForm(cx, "brief", project, worktree)
+		else report(cx, "Worktree not found. Refresh Projects.") end
 	elseif ev.act == "rename" then
 		local project, worktree = findWorktree(view.worktreePath(ev.node))
 		if project then openForm(cx, "rename", project, worktree)
@@ -1823,6 +2341,7 @@ for _, act in {
 	"help", "add", "refresh", "collapse", "create", "open-worktree", "link", "icebox-add", "icebox-remove",
 	"toggle-icebox", "change-base", "set-linear", "remove-project", "visualize", "rename",
 	"close-session", "delete-worktree", "confirm", "confirm-all", "cancel", "tab", "fold", "move-under", "make-top-level",
+	"make-lead", "brief-children",
 } do CANVAS_ACTIONS[act] = true end
 
 -- Clicks only queue their work: an overrun here would pause the hook and
@@ -1871,10 +2390,13 @@ local function tick(cx)
 	-- Resumes fast form checks after a plugin reload left a form open.
 	watchForms()
 	separately("job check", checkJobs)
-	if tern.now() - lastRefresh >= 15000 and #cx.canvas:list() > 0 then
+	-- A hidden panel still refreshes, more slowly: the rails relay from what it knows.
+	local interval = if #cx.canvas:list() > 0 then 15000 else 60000
+	if tern.now() - lastRefresh >= interval then
 		lastRefresh = tern.now()
 		separately("refresh", refresh)
 	end
+	separately("rails", flushRails)
 	followSoon()
 end
 
@@ -1886,10 +2408,18 @@ end)
 for _, name in { "focus", "tab_created", "tab_closed", "pane_created", "pane_closed" } do
 	tern.on(name, function(_ev, _cx) followSoon() end)
 end
--- An agent starting again clears its finished mark; any change redraws.
+-- An agent starting again clears its finished mark; any change redraws. The
+-- rails record and relay the change, and an agent appearing or leaving can
+-- change a worktree's overseer session.
 tern.on("agent_state", function(ev, _cx)
 	if ev.new == "working" or ev.new == "waiting_input" then
 		separately("agent state", function() setFinished(ev.pane, nil) end)
+		separately("rails agent", function(cx)
+			if cx then onAgentChange(cx, ev.pane, if ev.new == "working" then "working" else "waiting") end
+		end)
+	end
+	if ev.old == nil or ev.new == "exited" then
+		separately("rails leads", function(cx) if cx then syncAllLeads(cx) end end)
 	end
 	followSoon()
 end)
@@ -1900,6 +2430,11 @@ tern.on("agent_finished", function(ev, _cx)
 			local info = cx.session:pane(ev.pane)
 			if info and info.tab ~= shownTab(cx) then setFinished(ev.pane, ev.result) end
 		end)
+		separately("rails agent", function(cx)
+			if cx then onAgentChange(cx, ev.pane, ev.result) end
+		end)
+	else
+		separately("rails leads", function(cx) if cx then syncAllLeads(cx) end end)
 	end
 	followSoon()
 end)

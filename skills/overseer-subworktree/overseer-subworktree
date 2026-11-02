@@ -6,11 +6,15 @@
 # The parent is wherever this runs, never an argument: an agent can't attach
 # work to a worktree it isn't in.
 #
-# Usage: overseer-subworktree BRANCH [--base REF]
+# --brief FILE (or --brief - for stdin) hands the new worktree its first task:
+# the text is saved as overseer-brief.md in the worktree's private git dir, and
+# Overseer starts an omp session there with it as the first prompt.
+#
+# Usage: overseer-subworktree BRANCH [--base REF] [--brief FILE|-]
 set -euo pipefail
 
 usage() {
-    printf 'Usage: %s BRANCH [--base REF]\n' "${0##*/}" >&2
+    printf 'Usage: %s BRANCH [--base REF] [--brief FILE|-]\n' "${0##*/}" >&2
     exit 64
 }
 
@@ -18,16 +22,36 @@ usage() {
 branch=$1
 shift
 base=''
+brief_source=''
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --base) [ "$#" -ge 2 ] || usage; base=$2; shift 2 ;;
         --base=*) base=${1#--base=}; shift ;;
+        --brief) [ "$#" -ge 2 ] || usage; brief_source=$2; shift 2 ;;
+        --brief=*) brief_source=${1#--brief=}; shift ;;
         *) usage ;;
     esac
 done
 case "$branch" in
     ''|-*) printf 'Branch must be a name, not an option: %s\n' "$branch" >&2; exit 64 ;;
 esac
+
+# Read the brief before creating anything, so a bad brief leaves no worktree behind.
+brief=''
+if [ -n "$brief_source" ]; then
+    if [ "$brief_source" = - ]; then
+        brief=$(cat)
+    elif [ -f "$brief_source" ]; then
+        brief=$(cat -- "$brief_source")
+    else
+        printf 'Brief file not found: %s\n' "$brief_source" >&2
+        exit 66
+    fi
+    case "$brief" in
+        *[![:space:]]*) ;;
+        *) printf 'The brief is empty.\n' >&2; exit 65 ;;
+    esac
+fi
 
 wt=$(command -v wt) || { printf 'Worktrunk (wt) is not on PATH.\n' >&2; exit 69; }
 parent=$(git rev-parse --show-toplevel 2>/dev/null) || {
@@ -54,4 +78,9 @@ path=$(git -C "$parent" worktree list --porcelain | awk -v ref="refs/heads/$bran
     $1 == "worktree" { path = substr($0, 10) }
     $1 == "branch" && $2 == ref { print path }
 ')
+if [ -n "$brief" ]; then
+    git_dir=$(git -C "$path" rev-parse --absolute-git-dir)
+    printf '%s\n' "$brief" > "$git_dir/overseer-brief.md"
+    printf 'Overseer will start an omp session there with your brief.\n'
+fi
 printf 'Created %s under %s\n%s\n' "$branch" "$parent_branch" "$path"

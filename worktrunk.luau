@@ -75,6 +75,7 @@ local function find_executable(name)
 	end
 	return nil
 end
+M.find_executable = find_executable
 
 local function resolve_wt()
 	return find_executable("wt")
@@ -305,9 +306,10 @@ local function parse_worktrees(text, project)
 			conflicts = conflicts or changes.conflicted == true
 			dirty = dirty or conflicts
 			local diff = type(changes.diff) == "table" and changes.diff or {}
+			local commit = type(row.commit) == "table" and type(row.commit.sha) == "string" and row.commit.sha or nil
 			table.insert(trees, {
 				path = path, branch = if detached then nil else row.branch, is_main = main or path == project.path,
-				dirty = dirty, conflicts = conflicts,
+				dirty = dirty, conflicts = conflicts, head = commit,
 				changes = {
 					staged = changes.staged, modified = changes.modified, untracked = changes.untracked,
 					renamed = changes.renamed, deleted = changes.deleted,
@@ -363,12 +365,16 @@ local function branch_error(branch)
 	return nil
 end
 
--- Sub-worktrees: a branch's parent is the Worktrunk per-branch variable
--- `overseer-parent`, so agents, `wt` and every Overseer install read the same link.
+-- Per-branch Worktrunk variables Overseer and its agents share, so agents,
+-- `wt` and every Overseer install read the same values:
+-- `overseer-parent` (sub-worktree links) and `overseer-lead` (the pane id of
+-- the worktree's overseer session, which Overseer's messages go to).
 local PARENT_KEY = "overseer-parent"
+local LEAD_KEY = "overseer-lead"
+M.PARENT_KEY, M.LEAD_KEY = PARENT_KEY, LEAD_KEY
 
--- done(map of child branch -> parent branch, err, cx). Read-only.
-function M.parents(project, done)
+-- done({ parents = child branch -> parent branch, leads = branch -> pane id }, err, cx). Read-only.
+function M.links(project, done)
 	local ok, wt = pcall(resolve_wt)
 	if not ok then
 		deferred_error(done, tostring(wt))
@@ -379,20 +385,23 @@ function M.parents(project, done)
 		if result.status ~= 0 then done(nil, command_error("Cannot read sub-worktree links", result), cx); return end
 		local parsed, value = pcall(tern.json.decode, result.stdout)
 		if not parsed or type(value) ~= "table" then done(nil, "Cannot read Worktrunk state JSON", cx); return end
-		local parents = {}
+		local links = { parents = {}, leads = {} }
 		for _, var in (if type(value.vars) == "table" then value.vars else {}) do
-			if type(var) == "table" and var.key == PARENT_KEY and type(var.branch) == "string"
-				and type(var.value) == "string" and var.value ~= "" and var.value ~= var.branch then
-				parents[var.branch] = var.value
+			if type(var) == "table" and type(var.branch) == "string" and type(var.value) == "string" and var.value ~= "" then
+				if var.key == PARENT_KEY and var.value ~= var.branch then
+					links.parents[var.branch] = var.value
+				elseif var.key == LEAD_KEY and string.match(var.value, "^%d+$") then
+					links.leads[var.branch] = var.value
+				end
 			end
 		end
-		done(parents, nil, cx)
+		done(links, nil, cx)
 	end)
 end
 
--- Links `branch` under `parent`, or unlinks it when `parent` is nil. done(true, err, cx)
-function M.set_parent(project, branch, parent, done)
-	local invalid = branch_error(branch) or (parent and branch_error(parent))
+-- Sets one of the shared variables on `branch`, or clears it when `value` is nil. done(true, err, cx)
+function M.set_var(project, branch, key, value, done)
+	local invalid = branch_error(branch)
 	if invalid then
 		deferred_error(done, invalid)
 		return
@@ -402,13 +411,36 @@ function M.set_parent(project, branch, parent, done)
 		deferred_error(done, tostring(wt))
 		return
 	end
-	local argv = if parent
-		then { wt, "-C", project.path, "config", "state", "vars", "set", "--branch=" .. branch, PARENT_KEY .. "=" .. parent }
-		else { wt, "-C", project.path, "config", "state", "vars", "clear", "--branch=" .. branch, PARENT_KEY }
+	local argv = if value
+		then { wt, "-C", project.path, "config", "state", "vars", "set", "--branch=" .. branch, key .. "=" .. value }
+		else { wt, "-C", project.path, "config", "state", "vars", "clear", "--branch=" .. branch, key }
 	run(argv, function(result, err, cx)
 		if not result then done(nil, err, cx)
-		elseif result.status ~= 0 then done(nil, command_error("Cannot save the sub-worktree link", result), cx)
+		elseif result.status ~= 0 then done(nil, command_error("Cannot save " .. key, result), cx)
 		else done(true, nil, cx) end
+	end)
+end
+
+-- done(true | false, err, cx): whether commit `ancestor` is in `ref`'s history. Read-only.
+function M.is_ancestor(project, ancestor, ref, done)
+	git(project.path, { "merge-base", "--is-ancestor", ancestor, ref }, function(result, err, cx)
+		if not result then done(nil, err, cx)
+		elseif result.status == 0 then done(true, nil, cx)
+		elseif result.status == 1 then done(false, nil, cx)
+		else done(nil, command_error("Cannot compare commits", result), cx) end
+	end)
+end
+
+-- done({ "abc1234 subject", ... }, count, cx): commits in `to` that `from` lacks, newest first, at most `limit`. Read-only.
+function M.new_commits(project, from, to, limit, done)
+	git(project.path, { "log", "--format=%h %s", "-n" .. tostring(limit), from .. ".." .. to }, function(result, _err, cx)
+		local lines = {}
+		if result and result.status == 0 then
+			for line in string.gmatch(result.stdout, "[^\n]+") do table.insert(lines, line) end
+		end
+		git(project.path, { "rev-list", "--count", from .. ".." .. to }, function(count, _countErr, nextCx)
+			done(lines, count and count.status == 0 and tonumber(string.match(count.stdout, "%d+")) or #lines, nextCx or cx)
+		end)
 	end)
 end
 

@@ -3,8 +3,9 @@ local Input = require("./input")
 
 local LABELS = {
 	name = "Display name", branch = "Branch name", base = "Base branch", linear = "Workspace URL or name",
+	message = "Message",
 }
-local REQUIRED = { branch = true, base = true }
+local REQUIRED = { branch = true, base = true, message = true }
 
 -- Each input sits in a `field` keyed by its name, so its node id nests.
 local function inputId(name)
@@ -37,6 +38,13 @@ local MODES = {
 			return state.project .. " · Branches that name a ticket, such as feature/ENG-123, link to it in this workspace. Leave blank to use the Linear CLI's workspace."
 		end,
 	},
+	brief = {
+		heading = "Brief sub-worktrees", submit = "Send", fields = { "message" },
+		help = function(state)
+			return "Sends this to the overseer session of every sub-worktree of " .. state.project
+				.. ". One without a session gets it when it starts one."
+		end,
+	},
 }
 
 local function fieldOrder(state)
@@ -67,6 +75,13 @@ local function finish(state, cancelled)
 		response = { mode = "base", base = state.fields.base.text }
 	elseif state.mode == "linear" then
 		response = { mode = "linear", linear = state.fields.linear.text }
+	elseif state.mode == "brief" then
+		if not string.find(state.fields.message.text, "%S") then
+			state.error, state.errorField = "Enter a message.", "message"
+			state.focus = "message"
+			return
+		end
+		response = { mode = "brief", message = state.fields.message.text }
 	else
 		if not string.find(state.fields.branch.text, "%S") then
 			state.error, state.errorField = "Enter a branch name.", "branch"
@@ -99,6 +114,7 @@ tern.block.define("form", {
 			branch = Input.new(""),
 			base = Input.new(if mode == "base" then args[4] or "" else ""),
 			linear = Input.new(if mode == "linear" then args[4] or "" else ""),
+			message = Input.new(""),
 		}
 		if type(saved) == "table" and saved.token == state.token and saved.mode == mode then
 			for name in pairs(state.fields) do
@@ -149,6 +165,7 @@ tern.block.define("form", {
 			local placeholders = {
 				name = if state.mode == "rename" then state.project else "e.g. Fix onboarding",
 				branch = "feature/branch-name", base = "main", linear = "https://linear.app/your-team",
+				message = "e.g. The API moved to v2; rebase onto main before opening PRs",
 			}
 			for _, name in ipairs(fieldOrder(state)) do
 				local props = Input.props(state.fields[name])
