@@ -146,6 +146,29 @@ class WorktreeOperationTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual((path / "untracked.txt").read_text(), "unsaved work\n")
 
+    def test_forced_removal_deletes_uncommitted_work_but_keeps_branch(self):
+        path, branch = self.worktree()
+        (path / "tracked.txt").write_text("unsaved edit\n")
+        (path / "untracked.txt").write_text("unsaved work\n")
+        head = self.git("rev-parse", "HEAD", cwd=path)
+        result = self.operation("force-remove", path, branch)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(path.exists())
+        self.assertEqual(self.git("rev-parse", branch), head)
+        self.assertEqual((self.repo / "tracked.txt").read_text(), "original\n")
+
+    def test_forced_removal_still_refuses_primary_checkout_and_changed_branch(self):
+        (self.repo / "tracked.txt").write_text("primary edit\n")
+        result = self.operation("force-remove", self.repo, "master")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual((self.repo / "tracked.txt").read_text(), "primary edit\n")
+        path, branch = self.worktree()
+        (path / "untracked.txt").write_text("unsaved work\n")
+        self.git("switch", "-c", "changed-after-confirmation", cwd=path)
+        result = self.operation("force-remove", path, branch)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual((path / "untracked.txt").read_text(), "unsaved work\n")
+
     def test_primary_checkout_is_not_deleted(self):
         result = self.operation("remove", self.repo, "master")
         self.assertNotEqual(result.returncode, 0)

@@ -14,8 +14,8 @@ local function unhex(hex)
 	end))
 end
 
--- Tern labels menu entries with the whole action string, including any =value.
--- Keep menu actions plain and recover their target from our keyed row node.
+-- Menu rows send only their id; the target comes from the keyed row node the
+-- menu belongs to, so ids stay plain and paths never travel through labels.
 function View.worktreePath(node)
 	return unhex(type(node) == "string" and node:match("%.w(%x+)%.row$") or nil)
 end
@@ -30,11 +30,16 @@ local function text(key, value, role, props)
 	return ui.node("text", props)
 end
 
-local function button(key, label, action, title, role)
-	return ui.el("button", {
-		key = key, text = label, role = role or "overseer.button",
-		title = title, actions = { click = action },
-	})
+-- Tern's own button: its look, sizes, toggle, spinner and keycaps come from
+-- `variant`, `size`, `on`, `busy` and `keys`, with no CSS of ours.
+local function button(key, label, action, props)
+	props = props or {}
+	props.key, props.actions = key, { click = action }
+	return ui.button(label, props)
+end
+
+local function badge(key, label, tone, title)
+	return ui.node("badge", { key = key, text = label, tone = tone, title = title })
 end
 
 local PR_STATES = {
@@ -54,29 +59,39 @@ local AGENT_STATUS = {
 	},
 	failed = {
 		glyph = "!", role = "overseer.statusFailed", title = "Agent failed",
-		tabRole = "overseer.dotTabFailed", label = "failed", labelRole = "overseer.failed",
+		tabRole = "overseer.dotTabFailed", label = "failed", labelTone = "error",
 	},
 	done = {
 		glyph = "✔", role = "overseer.statusDone", title = "Agent finished",
-		tabRole = "overseer.dotTabDone", label = "done", labelRole = "overseer.done",
+		tabRole = "overseer.dotTabDone", label = "done", labelTone = "success",
 	},
 	working = { role = "overseer.dotAgent", title = "Agent working", tabRole = "overseer.dotTabAgent" },
 }
 
+-- Confirm strips: a destructive one is error-toned with a danger button; a
+-- consequential one is accent-toned with the screen's one primary button.
 local CONFIRMATIONS = {
 	delete = {
-		title = "Delete worktree?", confirm = "Delete worktree", keep = "Keep this worktree and session",
-		detail = "Removes this directory, including ignored files. Keeps Git branches. Its session closes after successful removal. Stop file-writing tasks first.",
-	},
-	close = {
-		title = "Close session?", confirm = "Close session", keep = "Keep this session",
-		detail = "Stops all running programs and closes this session's tabs. Keeps the worktree files and Git branches.",
+		title = "Delete worktree with uncommitted changes?", confirm = "Force delete", keep = "Keep this worktree and session",
+		icon = "trash", tone = "error", variant = "danger",
+		detail = "Force deleting removes these changes and the directory's ignored files for good. Keeps Git branches and commits. Its session closes after successful removal. Stop file-writing tasks first.",
 	},
 	["remove-project"] = {
 		title = "Remove project?", confirm = "Remove project", keep = "Keep this project",
+		icon = "folder-minus", tone = "accent", variant = "primary",
 		detail = "Stops showing this repository in Projects. Keeps the repository, its worktrees, branches and open sessions. Adding it again restores its names and Ice Box.",
 	},
+	-- A worktree with sub-worktrees: delete it alone (they move to the top
+	-- level) or with them. Either way it then gets its own clean/dirty check.
+	["delete-family"] = {
+		title = "Delete worktree and its sub-worktrees?", confirm = "Delete only this", keep = "Keep everything",
+		confirmAll = "Delete all", icon = "trash", tone = "error", variant = "default",
+		detail = "Delete all also removes each sub-worktree without uncommitted changes; one with changes is kept. Kept sub-worktrees, or all of them with Delete only this, move to the top level. Branches are always kept, and this worktree still asks before losing uncommitted changes.",
+	},
 }
+
+-- A folded parent's sub-worktree badge takes the tone of the agent that most needs you.
+local CHILD_TONES = { waiting = "warning", failed = "error", done = "success", working = "accent" }
 
 local function dot(key, role)
 	return ui.el("div", { key = key, role = role })
@@ -96,6 +111,31 @@ local function divergence(value)
 	if value.ahead > 0 then table.insert(parts, tostring(value.ahead) .. " ahead") end
 	if value.behind > 0 then table.insert(parts, tostring(value.behind) .. " behind") end
 	return table.concat(parts, ", ")
+end
+
+-- What a forced deletion loses, like `git status --short` with line counts:
+-- the status code in amber, the path with its directory muted, the counts
+-- green and red. It scrolls past a dozen lines.
+local function changeList(changes)
+	local rows = {}
+	for index, file in ipairs(changes.files) do
+		local spans = { ui.span(file.code, "warning"), " ", ui.span(file.path, "path") }
+		if file.added and file.added > 0 then
+			table.insert(spans, ui.span("  +" .. tostring(file.added), "success"))
+		end
+		if file.deleted and file.deleted > 0 then
+			table.insert(spans, ui.span("  −" .. tostring(file.deleted), "error"))
+		end
+		table.insert(rows, ui.node("text", { key = "c" .. tostring(index), spans = spans, wrap = "none", truncate = "middle" }))
+	end
+	local hidden = changes.total - #changes.files
+	if hidden > 0 then
+		table.insert(rows, ui.node("text", { key = "more", spans = { ui.span("… and " .. tostring(hidden) .. " more", "muted") } }))
+	end
+	return ui.node("col", { key = "changes", role = "overseer.changes", gap = "xs" }, {
+		ui.node("text", { key = "summary", spans = { ui.span(plural(changes.total, "uncommitted change"), "strong") } }),
+		ui.node("scroll", { key = "list", max = { h = "12lines" } }, rows),
+	})
 end
 
 -- The row's hover text: everything the minimal row leaves out. Lines without
@@ -136,39 +176,122 @@ local function details(worktree, branch)
 	return table.concat(lines, "\n")
 end
 
+local function statusMark(worktree)
+	if worktree.iced then
+		return text("status", "🧊", "overseer.iceMark", { title = "In the Ice Box" })
+	elseif worktree.deleting then
+		return ui.el("div", { key = "status", role = "overseer.dotBusy", title = "Deleting" })
+	elseif worktree.checking then
+		return ui.el("div", { key = "status", role = "overseer.dotBusy", title = "Checking before deletion" })
+	elseif AGENT_STATUS[worktree.agent] then
+		local agent = AGENT_STATUS[worktree.agent]
+		return if agent.glyph
+			then text("status", agent.glyph, agent.role, { title = agent.title })
+			else ui.el("div", { key = "status", role = agent.role, title = agent.title })
+	end
+	return ui.el("div", {
+		key = "status", role = if worktree.session then "overseer.dotOpen" else "overseer.dotIdle",
+		title = if worktree.session then "Session open" else "No session",
+	})
+end
+
+-- A tab's name as the panel shows it: what the row around it already says is
+-- dropped (the full name stays in the tooltip).
+local function shortTabName(name)
+	-- A GitHub pull request page: "<title> by <user> · Pull Request #12 · owner/repo" → "#12 <title>".
+	local title, number = name:match("^(.-) by [%w%-]+ · Pull Request #(%d+) · [%w%-%.]+/[%w%-%.]+$")
+	if title then return "#" .. number .. " " .. title end
+	-- Any other GitHub page ends with its repository.
+	local short = name:gsub(" · [%w%-%.]+/[%w%-%.]+$", "")
+	-- omp ends a session title with its pull request, which the worktree row links already.
+	short = short:gsub(" · #%d+$", "")
+	return short
+end
+
+local function appendTabs(children, tabs)
+	for _, tab in ipairs(tabs or {}) do
+		local agent = AGENT_STATUS[tab.agent]
+		local tabChildren = {
+			dot("dot", if agent then agent.tabRole elseif tab.busy then "overseer.dotBusy" else "overseer.dotTab"),
+			text("name", shortTabName(tab.name), "overseer.tabName", { grow = 1 }),
+		}
+		-- The dot's colour says working or waiting; a finished turn gets a badge.
+		-- State labels keep their width (`basis = "content"`): a long name truncates instead.
+		if agent and agent.label then
+			table.insert(tabChildren, badge("state", agent.label, agent.labelTone))
+		elseif not agent and tab.busy then
+			table.insert(tabChildren, ui.node("text", { key = "busy", basis = "content", spans = { ui.span("running", "warning") } }))
+		end
+		if not tab.pane then
+			table.insert(tabChildren, ui.node("text", { key = "unavailable", basis = "content", spans = { ui.span("no pane", "muted") } }))
+		end
+		table.insert(children, ui.node("row", {
+			key = "tab" .. tostring(tab.id), role = "overseer.tabRow",
+			title = if tab.pane then "Focus " .. tab.name else "This tab has no focusable pane",
+			actions = if tab.pane then { click = "tab=" .. tostring(tab.pane) } else nil,
+		}, tabChildren))
+	end
+end
+
+-- A session whose worktree was removed outside Overseer. Clicking still shows
+-- it (an agent's last reply may be there); its only menu entry closes it.
+local function goneNode(worktree, activePath)
+	local summary = ui.node("col", {
+		key = "row", role = "overseer.worktreeRow",
+		title = worktree.label .. "\n" .. worktree.path .. "\n\nThis worktree was removed outside Overseer. Close its session from the menu.",
+		aria = worktree.label .. ", worktree removed, session open",
+		actions = {
+			click = "open-worktree=" .. worktree.path,
+			menu = { { id = "close-session", label = "Close session", icon = "x" } },
+		},
+	}, {
+		ui.node("row", { key = "head", role = "overseer.worktreeHead" }, {
+			statusMark(worktree),
+			text("branch", worktree.label, "overseer.branch"),
+			ui.node("row", { key = "spacer", grow = 1 }, {}),
+			badge("gone", "worktree gone", "warning"),
+		}),
+		text("subtitle", basename(worktree.path), "overseer.worktreeSubtitle"),
+	})
+	local children = { summary }
+	appendTabs(children, worktree.tabs)
+	return ui.node("col", {
+		key = "w" .. safeKey(worktree.path), role = "overseer.worktree",
+		mark = if activePath == worktree.path then "pick" else nil,
+	}, children)
+end
+
+-- The worktree's right-click menu: what it is, how it's kept, then what ends it.
+local function worktreeMenu(worktree)
+	if worktree.deleting or worktree.checking then return {} end
+	local menu = {}
+	if worktree.pr then table.insert(menu, { id = "visualize", label = "Visualize PR", icon = "merge" }) end
+	table.insert(menu, { id = "rename", label = "Rename…", icon = "pen" })
+	if not worktree.is_main then
+		table.insert(menu, if worktree.iced
+			then { id = "icebox-remove", label = "Remove from Ice Box", icon = "box" }
+			else { id = "icebox-add", label = "Add to Ice Box", icon = "box" })
+		if worktree.branch then
+			table.insert(menu, { id = "move-under", label = "Move under…", icon = "corner-down-right" })
+		end
+		if worktree.parentLink then
+			table.insert(menu, { id = "make-top-level", label = "Make top-level", icon = "arrow-up" })
+		end
+	end
+	if worktree.session or not worktree.is_main then table.insert(menu, "-") end
+	if worktree.session then table.insert(menu, { id = "close-session", label = "Close session", icon = "x" }) end
+	if not worktree.is_main then
+		table.insert(menu, { id = "delete-worktree", label = "Delete worktree", icon = "trash", danger = true })
+	end
+	return menu
+end
+
 local function worktreeNode(worktree, activePath)
 	local branch = worktree.branch or "Detached HEAD"
 	local label = worktree.displayName or branch
 	local active = activePath == worktree.path
-	local menu = {}
-	if not worktree.deleting then
-		-- Menu entries show their action string verbatim, so actions are titled.
-		if worktree.pr then table.insert(menu, "Visualize PR") end
-		table.insert(menu, "Rename")
-		if not worktree.is_main then
-			table.insert(menu, if worktree.iced then "Remove from Ice Box" else "Add to Ice Box")
-		end
-		if worktree.session then table.insert(menu, "Close session") end
-		if not worktree.is_main then table.insert(menu, "Delete worktree") end
-	end
-	local status
-	if worktree.iced then
-		status = text("status", "🧊", "overseer.iceMark", { title = "In the Ice Box" })
-	elseif worktree.deleting then
-		status = ui.el("div", { key = "status", role = "overseer.dotBusy", title = "Deleting" })
-	elseif AGENT_STATUS[worktree.agent] then
-		local agent = AGENT_STATUS[worktree.agent]
-		status = if agent.glyph
-			then text("status", agent.glyph, agent.role, { title = agent.title })
-			else ui.el("div", { key = "status", role = agent.role, title = agent.title })
-	else
-		status = ui.el("div", {
-			key = "status", role = if worktree.session then "overseer.dotOpen" else "overseer.dotIdle",
-			title = if worktree.session then "Session open" else "No session",
-		})
-	end
 	local head = {
-		status,
+		statusMark(worktree),
 		text("branch", label, "overseer.branch"),
 	}
 	-- The conflicts badge already says the worktree has unfinished changes.
@@ -176,22 +299,37 @@ local function worktreeNode(worktree, activePath)
 		table.insert(head, text("dirty", "✱", "overseer.dirtyMark", { title = "Uncommitted changes" }))
 	end
 	if worktree.is_main then
-		table.insert(head, text("primary", "Primary", "overseer.badge"))
+		table.insert(head, badge("primary", "Primary", "neutral"))
+	end
+	-- Sub-worktrees: their count, which folds them; folded, it takes the tone
+	-- of the sub-worktree agent that most needs you.
+	if worktree.children then
+		local count = #worktree.children
+		table.insert(head, ui.node("badge", {
+			key = "fold", role = "overseer.fold",
+			text = (if worktree.folded then "▸ " else "▾ ") .. tostring(count),
+			tone = if worktree.folded then CHILD_TONES[worktree.childAgent] or "muted" else "muted",
+			title = plural(count, "sub-worktree") .. (if worktree.folded then " · click to show" else " · click to fold"),
+			actions = { click = "fold=" .. worktree.path },
+		}))
 	end
 	-- Pushes the remaining badges to the row's right edge.
-	table.insert(head, ui.el("div", { key = "spacer", grow = 1 }))
+	table.insert(head, ui.node("row", { key = "spacer", grow = 1 }, {}))
 	if worktree.conflicts then
-		table.insert(head, text("conflicts", "conflicts", "overseer.badgeBad"))
+		table.insert(head, badge("conflicts", "conflicts", "error", "Merge conflicts"))
 	end
 	if worktree.deleting then
-		table.insert(head, text("deleting", "deleting", "overseer.badgeWarn"))
+		table.insert(head, badge("deleting", "deleting", "warning"))
+	elseif worktree.checking then
+		table.insert(head, badge("checking", "checking", "warning"))
 	elseif not worktree.session then
 		table.insert(head, text("open", "Open", "overseer.openHint"))
 	end
-	-- The Linear ticket and pull request sit together, ticket first.
+	-- The Linear ticket and pull request sit together, ticket first. They are
+	-- plain icons with a click (an HTML button would take Tern's chip look).
 	local links = {}
 	if worktree.ticket then
-		table.insert(links, ui.el("button", {
+		table.insert(links, ui.el("div", {
 			key = "linear", role = "overseer.linear", title = worktree.ticket.id .. " — open in Linear",
 			aria = "Linear ticket " .. worktree.ticket.id, actions = { click = "link=" .. worktree.ticket.url },
 		}))
@@ -199,7 +337,7 @@ local function worktreeNode(worktree, activePath)
 	local pr = worktree.pr and PR_STATES[worktree.pr.state]
 	if pr then
 		local summary = "#" .. tostring(worktree.pr.number) .. " · " .. pr.label
-		table.insert(links, ui.el("button", {
+		table.insert(links, ui.el("div", {
 			key = "pr", role = pr.role, title = summary .. " — open on GitHub",
 			aria = "Pull request " .. summary, actions = { click = "link=" .. worktree.pr.url },
 		}))
@@ -219,124 +357,154 @@ local function worktreeNode(worktree, activePath)
 				else ", open session")
 			.. (if worktree.conflicts then ", merge conflicts" elseif worktree.dirty then ", uncommitted changes" else "")
 			.. (if worktree.iced then ", in the Ice Box" else ""),
-		actions = { click = if worktree.deleting then nil else "open-worktree=" .. worktree.path, menu = menu },
+		actions = {
+			click = if worktree.deleting then nil else "open-worktree=" .. worktree.path,
+			menu = worktreeMenu(worktree),
+		},
 	}, {
 		ui.node("row", { key = "head", role = "overseer.worktreeHead" }, head),
 		text("subtitle", subtitle, "overseer.worktreeSubtitle"),
 	})
 	local children = { summary }
-	for _, tab in ipairs(worktree.tabs or {}) do
-		local agent = AGENT_STATUS[tab.agent]
-		local tabChildren = {
-			dot("dot", if agent then agent.tabRole elseif tab.busy then "overseer.dotBusy" else "overseer.dotTab"),
-			text("name", tab.name, "overseer.tabName", { grow = 1 }),
-		}
-		-- The dot's colour says working or waiting; a finished turn is spelled out.
-		if agent and agent.label then
-			table.insert(tabChildren, text("state", agent.label, agent.labelRole))
-		elseif not agent and tab.busy then
-			table.insert(tabChildren, text("busy", "running", "overseer.busy"))
-		end
-		if not tab.pane then
-			table.insert(tabChildren, text("unavailable", "no pane", "overseer.marker"))
-		end
-		table.insert(children, ui.node("row", {
-			key = "tab" .. tostring(tab.id), role = "overseer.tabRow",
-			title = if tab.pane then "Focus " .. tab.name else "This tab has no focusable pane",
-			actions = if tab.pane then { click = "tab=" .. tostring(tab.pane) } else nil,
-		}, tabChildren))
-	end
+	appendTabs(children, worktree.tabs)
 	return ui.node("col", {
 		key = "w" .. safeKey(worktree.path), role = "overseer.worktree",
 		mark = if active then "pick" else nil,
 	}, children)
 end
 
+local function confirmationNode(request)
+	local copy = CONFIRMATIONS[request.kind]
+	local body = {
+		ui.node("text", { key = "name", spans = { ui.span(request.label, "strong") } }),
+		ui.node("text", { key = "path", spans = { ui.span(request.path, "path") }, truncate = "middle" }),
+	}
+	if request.changes then table.insert(body, changeList(request.changes)) end
+	if request.children then
+		local rows = {}
+		for index, child in ipairs(request.children) do
+			local spans = { ui.span(child.label) }
+			if child.dirty then table.insert(spans, ui.span("  ✱ uncommitted, kept", "warning")) end
+			table.insert(rows, ui.node("text", { key = "s" .. tostring(index), spans = spans, wrap = "none", truncate = "end" }))
+		end
+		table.insert(body, ui.node("col", { key = "family", role = "overseer.family", gap = "xs" }, {
+			ui.node("text", { key = "summary", spans = { ui.span(plural(#request.children, "sub-worktree"), "strong") } }),
+			ui.node("scroll", { key = "list", max = { h = "12lines" } }, rows),
+		}))
+	end
+	table.insert(body, ui.node("text", { key = "detail", spans = { ui.span(copy.detail, "muted") } }))
+	local buttons = { button("cancel", "Cancel", "cancel=" .. request.id, { variant = "quiet", title = copy.keep }) }
+	table.insert(buttons, button("confirm", copy.confirm, "confirm=" .. request.id, {
+		variant = copy.variant, busy = request.checking == true, title = "Confirm " .. request.label,
+	}))
+	if copy.confirmAll then
+		table.insert(buttons, button("confirm-all", copy.confirmAll .. " " .. tostring(#request.children + 1), "confirm-all=" .. request.id, {
+			variant = "danger", title = "Delete " .. request.label .. " and its sub-worktrees",
+		}))
+	end
+	table.insert(body, ui.node("row", { key = "buttons", gap = "sm", justify = "end", wrap = true }, buttons))
+	return ui.card(copy.title, body, { key = "confirmation", tone = copy.tone, icon = copy.icon })
+end
+
+local function projectNode(model, project)
+	local collapsed = model.collapsed and model.collapsed[project.id]
+	local children = {
+		ui.node("row", {
+			key = "header", role = "overseer.projectHeader",
+			actions = { menu = {
+				{ id = "change-base", label = "Change base branch…", icon = "branch" },
+				{ id = "set-linear", label = "Set Linear workspace…", icon = "link" },
+				"-",
+				{ id = "remove-project", label = "Remove project…", icon = "folder-minus" },
+			} },
+		}, {
+			ui.node("row", {
+				key = "collapse", role = "overseer.projectToggle",
+				title = (if collapsed then "Expand " else "Collapse ") .. project.name .. "\n" .. project.path,
+				aria = (if collapsed then "Expand " else "Collapse ") .. project.name,
+				actions = { click = "collapse=" .. project.id },
+			}, {
+				ui.node("icon", { key = "chev", name = if collapsed then "chev-r" else "chev" }),
+				text("name", project.name, "overseer.projectName"),
+			}),
+			badge("count", tostring(project.total), "muted", plural(project.total, "worktree")),
+			ui.node("row", { key = "spacer", grow = 1 }, {}),
+			button("create", "", "create=" .. project.id, {
+				icon = "plus", variant = "quiet", size = "sm", title = "New worktree from " .. project.base,
+			}),
+		}),
+	}
+	if project.error then
+		table.insert(children, ui.card("Couldn't list worktrees", {
+			ui.node("text", { key = "message", spans = { ui.span(project.error, "mono") }, wrap = "char" }),
+			ui.node("row", { key = "buttons", justify = "end" }, {
+				button("retry", "Retry", "refresh", { icon = "refresh", size = "sm" }),
+			}),
+		}, { key = "error", tone = "error", icon = "warn" }))
+	end
+	if project.loading and #(project.worktrees or {}) == 0 then
+		table.insert(children, ui.node("shimmer", { key = "loading", role = "overseer.loading", text = "Loading worktrees…" }))
+	end
+	if not collapsed then
+		for _, worktree in ipairs(project.worktrees or {}) do
+			if worktree.gone then
+				table.insert(children, goneNode(worktree, model.activePath))
+			else
+				table.insert(children, worktreeNode(worktree, model.activePath))
+				-- Sub-worktrees hang under their parent's group, not inside it, so
+				-- the parent's highlight and hover stay its own.
+				if worktree.children and not worktree.folded then
+					local nested = {}
+					for _, child in ipairs(worktree.children) do
+						table.insert(nested, worktreeNode(child, model.activePath))
+					end
+					table.insert(children, ui.node("col", { key = "c" .. safeKey(worktree.path), role = "overseer.children" }, nested))
+				end
+			end
+		end
+		if not project.loading and not project.error and #(project.worktrees or {}) == 0 and project.hiddenIced == 0 then
+			table.insert(children, ui.node("empty", {
+				key = "empty", variant = "inline", icon = "branch", text = "No worktrees found",
+			}, {
+				button("refresh", "Refresh", "refresh", { variant = "quiet", size = "sm" }),
+			}))
+		end
+	end
+	return ui.node("col", { key = "p" .. safeKey(project.id), role = "overseer.project" }, children)
+end
+
 function View.render(model)
 	local children = {
 		ui.node("row", { key = "header", role = "overseer.header" }, {
-			ui.node("row", { key = "titleGroup", role = "overseer.titleGroup", grow = 1 }, {
-				text("title", "Projects", "overseer.heading"),
-				ui.el("button", {
-					key = "help", role = "overseer.infoButton",
-					title = "How Projects works", aria = "How Projects works",
-					actions = { click = "help" },
+			ui.node("text", { key = "title", role = "overseer.heading", text = "Projects" }),
+			button("help", "", "help", { icon = "info", variant = "quiet", size = "sm", title = "How Projects works" }),
+			ui.node("row", { key = "spacer", grow = 1 }, {}),
+			ui.node("buttons", { key = "actions", variant = "toolbar", size = "sm", label = "Projects" }, {
+				button("add", "", "add", { icon = "folder-plus", title = "Add an existing Git repository" }),
+				button("refresh", "", "refresh", {
+					icon = "refresh", busy = model.refreshing == true,
+					title = if model.refreshing then "Refreshing…" else "Refresh worktrees and sessions",
+				}),
+				button("icebox", "🧊", "toggle-icebox", {
+					on = model.showIcebox == true,
+					title = if model.showIcebox then "Hide Ice Box worktrees" else "Show Ice Box worktrees",
 				}),
 			}),
-			button("add", "+", "add", "Add an existing Git repository", "overseer.iconButton"),
-			-- The glyph is its own element so only the arrow turns, not the button's frame.
-			ui.el("button", {
-				key = "refresh", role = "overseer.iconButton", actions = { click = "refresh" },
-				title = if model.refreshing then "Refreshing…" else "Refresh worktrees and sessions",
-				aria = if model.refreshing then "Refreshing" else "Refresh worktrees and sessions",
-			}, {
-				text("glyph", "↻", if model.refreshing then "overseer.refreshGlyphSpin" else "overseer.refreshGlyph"),
-			}),
-			button("icebox", "🧊", "toggle-icebox",
-				if model.showIcebox then "Hide Ice Box worktrees" else "Show Ice Box worktrees",
-				if model.showIcebox then "overseer.iconButtonOn" else "overseer.iconButton"),
 		}),
 	}
 	if model.confirmation then
-		local request = model.confirmation
-		local copy = CONFIRMATIONS[request.kind]
-		local buttons = {
-			button("cancel", "Cancel", "cancel=" .. request.id, copy.keep),
-		}
-		if not request.checking then
-			table.insert(buttons, button("confirm", copy.confirm,
-				"confirm=" .. request.id, "Confirm " .. request.label, "overseer.dangerButton"))
-		end
-		table.insert(children, ui.node("col", { key = "confirmation", role = "overseer.confirmation" }, {
-			text("title", copy.title, "overseer.formHeading"),
-			text("name", request.label, "overseer.branch"),
-			text("path", request.path, "overseer.hint"),
-			text("detail", copy.detail, "overseer.hint"),
-			text("status", if request.checking then "Checking worktree..." else "", "overseer.hint"),
-			ui.node("row", { key = "buttons", role = "overseer.formButtons" }, buttons),
-		}))
+		table.insert(children, confirmationNode(model.confirmation))
 	end
 	if #model.projects == 0 then
-		table.insert(children, ui.node("col", { key = "empty", role = "overseer.empty" }, {
-			text("title", "Your repositories, in one place.", "overseer.emptyTitle"),
-			text("help", "Add a project to see every worktree and its Tern tabs. Existing worktrees stay as they are.", "overseer.hint"),
-			button("add", "Add your first project", "add", "Choose a Git repository"),
+		table.insert(children, ui.node("empty", {
+			key = "empty", icon = "folder-plus", title = "Your repositories, in one place.",
+			text = "Add a project to see every worktree and its Tern tabs. Existing worktrees stay as they are.",
+		}, {
+			button("add", "Add your first project", "add", { variant = "primary", icon = "folder-plus" }),
 		}))
 	end
 	for _, project in ipairs(model.projects) do
-		local collapsed = model.collapsed and model.collapsed[project.id]
-		local projectChildren = {
-			ui.node("row", {
-				key = "header", role = "overseer.projectHeader",
-				actions = { menu = { "Change base branch", "Set Linear workspace", "Remove project" } },
-			}, {
-				button("collapse", (if collapsed then "▸  " else "▾  ") .. project.name,
-					"collapse=" .. project.id, (if collapsed then "Expand " else "Collapse ") .. project.name .. "\n" .. project.path,
-					"overseer.projectToggle"),
-				text("count", tostring(project.total), "overseer.count"),
-				button("create", "+", "create=" .. project.id, "New worktree from " .. project.base, "overseer.iconButton"),
-				ui.node("row", { key = "spacer", grow = 1 }, {}),
-			}),
-		}
-		if project.error then
-			table.insert(projectChildren, text("error", project.error, "overseer.error"))
-		end
-		if project.loading and #(project.worktrees or {}) == 0 then
-			table.insert(projectChildren, ui.node("col", { key = "loading", role = "overseer.loading" }, {
-				text("label", "Loading worktrees", "overseer.shimmer", { aria = "Loading worktrees" }),
-			}))
-		end
-		if not collapsed then
-			for _, worktree in ipairs(project.worktrees or {}) do
-				table.insert(projectChildren, worktreeNode(worktree, model.activePath))
-			end
-			if not project.loading and not project.error and #(project.worktrees or {}) == 0 and project.hiddenIced == 0 then
-				table.insert(projectChildren, text("empty", "No worktrees found. Refresh to check this repository.", "overseer.hint"))
-			end
-		end
-		table.insert(children, ui.node("col", {
-			key = "p" .. safeKey(project.id), role = "overseer.project",
-		}, projectChildren))
+		table.insert(children, projectNode(model, project))
 	end
 	return ui.node("col", { key = "overseer", role = "overseer.navigator" }, children)
 end

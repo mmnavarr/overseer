@@ -24,7 +24,7 @@ Running five agents on five branches means five checkouts, a pile of terminals, 
 
 ## The panel
 
-The panel stays with you: it sits on the left of whichever tab you're looking at, across every session, and keeps the width you give it. Each project is a local Git repository. Under it, every worktree is a row, and under each row are its open tabs. Click a tab to jump straight to it. Hover a row for its branch, path, line counts, ahead/behind and PR.
+The panel stays with you: it sits on the left of whichever tab you're looking at, across every session, and keeps the width you give it. Each project is a local Git repository. Under it, every worktree is a row, and under each row are its open tabs. Click a tab to jump straight to it; a green **done** or red **failed** badge marks an agent turn that ended while you were elsewhere. Tab names drop what the row already shows: a GitHub pull request page reads `#123 <title>` without its author and repository, and omp's ` · #123` suffix is left off (hover a tab for its full name). Hover a row for its branch, path, line counts, ahead/behind and PR.
 
 <table>
 <tr>
@@ -55,7 +55,7 @@ You need macOS and:
 
 | | Required for | |
 |---|---|---|
-| [Tern](https://docs.stencil.so/tern/) desktop | everything | 0.9.6 or later |
+| [Tern](https://docs.stencil.so/tern/) desktop | everything | 0.9.9 or later |
 | [Worktrunk](https://worktrunk.dev) (`wt`), Git, Bash | everything | tested with wt 0.40.0 |
 | [GitHub CLI](https://cli.github.com) (`gh`), signed in | PR badges, Visualize PR | optional |
 | [Linear CLI](https://github.com/schpet/linear-cli) (`linear`), signed in | ticket links | optional |
@@ -69,6 +69,12 @@ cd overseer
 
 Linking reloads the plugin whenever the source changes. Use `tern plugin install "$PWD"` instead if you'd rather have a frozen copy.
 
+To let omp agents create [sub-worktrees](#sub-worktrees), link the skill once:
+
+```sh
+ln -s "$PWD/skills/overseer-subworktree" ~/.omp/agent/skills/overseer-subworktree
+```
+
 ## Use it
 
 1. **Show Projects:** <kbd>⌘</kbd><kbd>⌥</kbd><kbd>⇧</kbd><kbd>P</kbd>, or **Show or hide Projects** in the command palette. Press it again while the panel has focus to hide it.
@@ -80,11 +86,13 @@ Linking reloads the plugin whenever the source changes. Use `tern plugin install
 <img src="docs/images/context-menu.png" alt="Right-click menu on a worktree" width="420">
 
 - **Visualize PR** for a reviewer's outline of the branch's pull request
-- **Rename** changes the row's label (the branch stays as it is)
+- **Rename…** changes the row's label (the branch stays as it is)
 - **Add to Ice Box** parks a worktree at the bottom; 🧊 in the header hides or shows parked ones
-- **Close session** stops its programs and closes its tabs (the files stay)
-- **Delete worktree** runs `wt remove`. It refuses if there are uncommitted changes and always keeps the branch.
-- On a project: **Change base branch**, **Set Linear workspace** and **Remove project** (stops showing it; the repository, worktrees and sessions stay, and adding it again brings back its names and Ice Box)
+- **Close session** stops its programs and closes its tabs straight away, without a confirmation (the files stay)
+- **Delete worktree** runs `wt remove` straight away when the worktree is clean. With uncommitted or untracked changes it first lists them, like `git status --short` with line counts, and **Force delete** removes the worktree with them (`wt remove --force`). The branch is always kept. Its session closes once the directory is gone. A worktree with [sub-worktrees](#sub-worktrees) asks first whether they go too.
+- **Move under…** makes a worktree a sub-worktree of another; **Make top-level** undoes it
+- A worktree removed outside Overseer (`wt remove`, `wt merge`, `git worktree remove`) shows as **worktree gone** while its session is open. Click it to see the session; **Close session** closes it.
+- On a project: **Change base branch…**, **Set Linear workspace…** and **Remove project…** (stops showing it; the repository, worktrees and sessions stay, and adding it again brings back its names and Ice Box)
 
 ### Start work from a ticket
 
@@ -97,6 +105,26 @@ Overseer creates `feature/ENG-123` from the project's base branch and opens its 
 > *Please read ticket ENG-123 to understand your task and ask any questions you have before we start*
 
 The project is the one you're in, or name it: *"…for ENG-123 in api"*. If the branch already exists, Carly tells you instead.
+
+### Sub-worktrees
+
+A worktree can own others: an agent working on one task that spins off a branch per fix keeps those fixes under its row instead of scattering them through the list.
+
+```text
+● Space/Website Fixxer  ▾ 5
+  feature/space-website-lurker
+  │ ○ fix/website-coingecko-caps
+  │ ○ fix/website-drain-on-term ✱
+  │ …
+```
+
+- **Agents create them** with the `overseer-subworktree` skill (link it once, see [Install](#install)): `overseer-subworktree <branch> [--base <ref>]`, run inside the owning worktree. The owner is wherever it runs, never an argument, so an agent can only attach work to the worktree it's in. It runs `wt switch --create` with your hooks and approvals as usual.
+- **You adopt existing ones** with **Move under…**, which lists the top-level worktrees; **Make top-level** puts one back.
+- **The badge folds them.** `▾ 5` shows how many; click it to fold. Folded, it takes the color of the sub-worktree agent that most needs you (amber waiting, red failed, green done, accent working). The worktree you're in always shows.
+- **Each keeps its own session**, menu, PR and ticket links. Nesting is one level deep: a sub-worktree of a sub-worktree shows under the top owner.
+- **Deleting the owner asks.** **Delete only this** leaves the sub-worktrees, which move to the top level. **Delete all** also removes every sub-worktree without uncommitted changes; one with changes is kept and moves up. The owner still gets its usual Force delete check.
+- **Ice Box:** parking the owner parks its sub-worktrees with it.
+- The link is Worktrunk's per-branch variable `overseer-parent` on the sub-worktree's branch (`wt config state vars get --branch=<branch> overseer-parent`), so agents and `wt` see it too. Git branches stay independent: nesting is for the panel, not ancestry.
 
 ### Visualize a PR
 
@@ -121,7 +149,7 @@ flowchart LR
     panel -. "gh pr diff → omp (read-only)" .-> outline["PR outline canvas"]
 ```
 
-- **Worktrunk owns the worktrees.** Overseer calls `wt` and never passes `--yes`, `--no-hooks` or force flags. Your hooks and approval prompts run in a visible tab.
+- **Worktrunk owns the worktrees.** Overseer calls `wt` and never passes `--yes` or `--no-hooks`, and passes `--force` only after you confirm the listed changes. Your hooks and approval prompts run in a visible tab.
 - **Tern owns the sessions.** Overseer remembers which session belongs to which worktree and switches between them.
 - **The panel follows you.** Tern plugins can't pin a sidebar to the window, so Overseer keeps one Projects panel per window and moves it into whichever tab you're on.
 - **Everything else is a read.** PR badges, ticket links, agent status and change counts come from `gh`, `linear`, `git` and Tern's own agent state.
@@ -129,7 +157,7 @@ flowchart LR
 ## Safety
 
 - Creation never fetches, pulls, or checks out anything in your primary checkout.
-- Deletion rechecks the repository, branch and cleanliness right before it runs. It never deletes a branch. The primary checkout can't be deleted.
+- Deletion rechecks the repository and branch right before it runs, and cleanliness too unless you confirmed a force delete. It never deletes a branch. The primary checkout can't be deleted.
 - Ignored files are removed with a deleted worktree's directory, so copy out anything you need first.
 - Branch names and paths are passed as arguments, never as shell text.
 
@@ -172,12 +200,13 @@ When debugging an overrun, read the log: `exceeded its budget; paused … hook="
 | `budget.luau` | Living with the 50 ms rule: `later` (labelled timer callbacks), `process` (process results with logged errors), and `describe` (the log line for a `budget` event). |
 | `worktrunk.luau` | Every external command: `wt list`, validation, the creation and removal command lines, `git` status, `gh pr list`/`gh pr view`/`gh pr diff`, `linear auth whoami`. Commands are argv arrays started by `spawn`; `find_executable` checks Homebrew, `/usr/local/bin`, `~/.bun/bin` and `~/.local/bin`. |
 | `visualize.luau` | Visualize PR: prompt, read-only omp invocation, output extraction, cache. |
-| `view.luau` | Pure render: model → Tern UI node tree (rows, badges, tab rows, confirmations, menus). |
+| `view.luau` | Pure render: model → Tern UI node tree (rows, badges, tab rows, confirm strips, menus). Actions are Tern's own kinds (`button`, `buttons`, `badge`, `card`, `empty`, `shimmer`, menu rows); no HTML buttons. |
 | `worktree-operation.sh` | The helper that runs `wt switch --create` / `wt remove` in a visible terminal and writes an atomic completion receipt. |
 | `host.luau`, `input.luau` | The native form block and its text input. |
-| `styles.css`, `icons.css` | Panel styles. `icons.css` is **generated** by `icons/generate-css.py` (plugin stylesheets can't load files, so icons are embedded as data URIs). |
+| `styles.css`, `icons.css` | Panel layout and status marks only: Tern's kinds draw buttons, badges, cards and menus themselves. The canvas has no `font` prop, so `styles.css` sets the panel in the UI face (`--sans`) and branches and paths back in `--mono`. `icons.css` is **generated** by `icons/generate-css.py` (plugin stylesheets can't load files, so icons are embedded as data URIs). |
 | `skills/visual-pr/` | HumanLayer's visual-pr skill, vendored unchanged (MIT). |
-| `tests/test_worktree_operation.py` | Real Git/Worktrunk tests for the helper. |
+| `skills/overseer-subworktree/` | The omp skill and script agents use to create a sub-worktree of the worktree they run in. |
+| `tests/test_worktree_operation.py`, `tests/test_subworktree.py` | Real Git/Worktrunk tests for the helper and the sub-worktree script. |
 
 ### State
 
@@ -186,8 +215,8 @@ Tern's plugin KV (`~/Library/Application Support/Tern/plugin-data/overseer/kv.js
 | Key | Shape | Notes |
 |---|---|---|
 | `projects` | `[{id, name, path, base, linear?}]` | `id` is the repository's shared Git directory, so linked checkouts dedupe. `linear` overrides the CLI workspace. |
-| `worktree-names` | `{[projectId]: {[path]: name}}` | Display names. Removed when Overseer deletes the worktree. |
-| `sessions` | `{[path]: {id, host, project}}` | Worktree → Tern session binding. |
+| `worktree-names` | `{[projectId]: {[path]: name}}` | Display names. Removed when Overseer deletes the worktree, or when a refresh finds it gone. |
+| `sessions` | `{[path]: {id, host, project}}` | Worktree → Tern session binding. A refresh drops bindings of gone worktrees whose session is closed. |
 | `icebox` | `{[projectId]: {[path]: true}}` | Parked worktrees. `show-icebox` is the header toggle. |
 | `jobs` | `{[id]: {kind = "create" \| "remove", project, receipt, pane, …}}` | Running creations and deletions; creations also carry `branch`, `displayName?` and `agentPrompt?`. Persisted so a plugin reload doesn't lose them. |
 | `panel-open`, `panel-share` | `boolean`, `number` | Whether you want the Projects panel shown (the shortcut sets it), and its width as a share of the tab. |
@@ -196,11 +225,15 @@ Tern's plugin KV (`~/Library/Application Support/Tern/plugin-data/overseer/kv.js
 
 Files under `tern.plugin.data`: `creation-<id>.status` and `removal-<id>.status` receipts written by the helper, and the `visual-pr/<project>-<pr>-<headsha>.md` outline cache.
 
-In-memory only: the per-project `cache` (worktrees, PRs, loading/error flags), `rendered` signatures per panel pane, the panel's pane and last tab, the Linear default workspace, open outline canvases.
+In-memory only: the per-project `cache` (worktrees, PRs, gone paths with open sessions, loading/error flags), `rendered` signatures per panel pane, the panel's pane and last tab, the Linear default workspace, open outline canvases.
 
 ### Flows
 
-**Refresh.** `refresh` runs `wt list --format=json` per project, then `refreshPullRequests` (one `gh pr list` per GitHub project, at most every 2 minutes, immediately after ↻ or a worktree set change). An open panel refreshes every 15 s from `tick`.
+**Refresh.** `refresh` runs `wt list --format=json` per project, beside `refreshParents` (`wt config state get --format=json`, keeping the `overseer-parent` vars as `entry.parents`; a failed read keeps the last links), then `refreshPullRequests` (one `gh pr list` per GitHub project, at most every 2 minutes, immediately after ↻ or a worktree set change). An open panel refreshes every 15 s from `tick`.
+
+**Sub-worktrees.** `owners(entry)` maps each worktree to the top of its `overseer-parent` chain among the listed worktrees (a link past the listing stops there, a cycle or a primary checkout as child stays on top). `model` puts owned worktrees in their owner's `children` (Ice Box ones last; an iced owner parks them; `folded` is in memory) with `childAgent` the most urgent agent among them; the view draws them in a `c<hex>` column after the owner's group, so path recovery (`w<hex>.row`) works unchanged. **Move under…** offers only top-level worktrees (`cx:pick`), and both it and **Make top-level** go through `setParent`: an optimistic `entry.parents` update, `wt config state vars set|clear`, then `refreshParents`. Deleting an owner opens the `delete-family` confirmation; **Delete all** queues one `beginRemoval` per sub-worktree with `keepIfDirty` (a dirty one is kept with a toast instead of asking) and then the owner's own.
+
+**Gone worktrees.** After each successful listing, `reconcileGone` treats a recorded path that isn't listed, isn't being deleted and isn't on disk as removed outside Overseer. It drops the path's `worktree-names` and `icebox` entries. If the path's bound session is still open it goes in `entry.gone`, and `model` adds it as a `gone` row (`goneNode` in the view: click switches to the session, the menu offers only **Close session**). Otherwise the binding is dropped. Never closing these sessions automatically is deliberate: an agent that removes its own worktree would be killed before you read its reply.
 
 **The following panel.** Tern panes belong to one tab, and plugins can't add a window-level sidebar, so the window keeps exactly one Projects slot and moves it into whichever tab is shown, left of everything and full height. `slot` finds it: the navigator canvas or a form shown in its place, adopting what a reload left open and closing any extra. `pin` moves it with `move_to_tab` (or `unpark`) then `move(…, "left")` and steers the split ratio to the remembered share, since Tern resizes in cells and hidden tabs measure differently. `followSoon` queues `follow` on `focus`, `tab_created`, `tab_closed`, `pane_created`, `pane_closed`, `window_start` and every `tick`. Moves work across sessions. Edge cases:
 
@@ -210,7 +243,7 @@ In-memory only: the per-project `cache` (worktrees, PRs, loading/error flags), `
 
 **Create.** Form or Carly → `wt.validate` → `launchCreation` opens a background tab running `worktree-operation.sh` and records a job → `checkJobs` (on `tick`) reads the receipt → on success: toast, apply the display name by branch (`applyCreatedName`), and for ticket worktrees `startTicketAgent` opens the session and calls `cx.agents:start({command = "omp", prompt = …})`. Creation succeeded means `wt` exited 0, not that every hook succeeded.
 
-**Delete.** Confirmation → `wt.validate_removal` (repository identity, branch, cleanliness) → removal job in a background tab → receipt → close the worktree's session only if the directory is gone, then drop its name, binding and Ice Box entry.
+**Delete.** `beginRemoval`: `wt.validate_removal` (repository identity, branch) while the row shows **checking** → clean: removal job right away. Dirty: `wt.local_changes` (`git status --porcelain=v1 -z --no-renames` plus `git diff HEAD --numstat`, first 200 entries) fills the confirmation; **Force delete** reruns `beginRemoval` with `force`, and the helper runs in `force-remove` mode (`wt remove --force`, no cleanliness check). Either way: removal job in a background tab → receipt → close the worktree's session only if the directory is gone, then drop its name, binding and Ice Box entry. Cancelling during a check never starts a deletion (`removalChecks`).
 
 **Agent status.** `agentActivity` reads `cx.agents:list()`: `state == "waiting_input"` → waiting, `"working"` → working, otherwise the pane's `agents-finished` mark (done or failed). An `agent_finished` event with result `done` or `failed` sets that mark unless the agent's tab is shown; `agent_state` back to working or waiting clears it, and `markSeen` (after every `follow`) clears marks whose tab is shown or whose pane is gone. For agent CLIs in plain terminals (`omp`, `pi`, `claude`, `codex`, `opencode`, `gemini`, `aider`, `amp`, `cursor-agent`, `crush`, `goose`) it uses the pane's `busy` flag (working only). Per session and tab the state that most needs you wins: waiting, then failed, then done, then working.
 
@@ -230,6 +263,7 @@ Run the helper's tests (they use temporary repos, config and approvals):
 
 ```sh
 python3 -B tests/test_worktree_operation.py -v
+python3 -B tests/test_subworktree.py -v
 bash -n worktree-operation.sh
 ```
 
@@ -270,7 +304,7 @@ Other conventions:
 
 ## Credits
 
-- Pull request and info icons: [Primer Octicons](https://primer.style/octicons/) (MIT, `icons/LICENSE`).
+- Pull request icons: [Primer Octicons](https://primer.style/octicons/) (MIT, `icons/LICENSE`).
 - Visualize PR follows [humanlayer/skills](https://github.com/humanlayer/skills)' visual-pr skill, vendored at `ca7c8088db69` (MIT, `skills/visual-pr/LICENSE`).
 - The ticket icon is Linear's official logo mark from [Linear's brand assets](https://linear.app/brand) (`icons/linear.svg`). Linear and its logo are trademarks of Linear Orbit, Inc., used here only to link to Linear tickets.
 - Built on [Tern](https://docs.stencil.so/tern/), [Worktrunk](https://worktrunk.dev) and [omp](https://omp.sh).

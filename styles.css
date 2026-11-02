@@ -1,100 +1,83 @@
-/* Panel and forms run a touch smaller than Tern's base; every other size is relative to it. */
+/* Buttons, badges, cards, menus, empty states and the shimmer are Tern's own
+   kinds and carry no CSS here. What's left is the panel's layout, its status
+   marks and the brand icons (icons.css). */
+
+/* The panel is a canvas, which has no `font` prop: set people's text in the UI
+   face here, and machine strings (branches, paths) back in mono below. */
 [data-role='overseer.navigator'] {
-  gap: 12px;
+  gap: 10px;
   color: var(--t1);
-  font-size: 0.93em;
+  font: 400 13px/18px var(--sans);
 }
 [data-role='overseer.header'],
 [data-role='overseer.projectHeader'] {
   align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-[data-role='overseer.header'] {
-  padding-bottom: 2px;
-}
-[data-role='overseer.projectHeader'] {
-  padding-bottom: 4px;
-}
-[data-role='overseer.heading'],
-[data-role='overseer.formHeading'] {
-  font-weight: 650;
-  color: var(--t1);
-}
-[data-role='overseer.heading'] {
-  font-size: 1em;
-}
-[data-role='overseer.formHeading'] {
-  font-size: 1.15em;
-}
-[data-role='overseer.titleGroup'] {
-  align-items: center;
   gap: 6px;
 }
-/* Octicon info-16, drawn at 14px. The image itself lives in icons.css (generated). */
-[data-role='overseer.infoButton'] {
-  width: 14px;
-  height: 14px;
-  min-width: 14px;
-  padding: 0;
-  border: 0;
-  border-radius: 50%;
-  cursor: pointer;
-  background-color: transparent;
-  background-size: 14px 14px;
-  background-repeat: no-repeat;
-  background-position: center;
+[data-role='overseer.heading'] {
+  font-weight: 600;
+  font-size: 14px;
 }
 [data-role='overseer.project'] {
-  gap: 4px;
-  padding-bottom: 6px;
+  gap: 2px;
+}
+[data-role='overseer.projectHeader'] {
+  padding: 0 0 2px;
 }
 [data-role='overseer.projectToggle'] {
+  gap: 4px;
+  min-width: 0;
+  padding: 2px 6px 2px 2px;
+  border-radius: var(--r-chip);
+  color: var(--t2);
+}
+[data-role='overseer.projectToggle']:hover {
   color: var(--t1);
-  font: inherit;
-  font-weight: 650;
-  padding: 4px 6px 4px 2px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  text-align: left;
-  cursor: pointer;
+  background: var(--l1);
 }
-[data-role='overseer.count'] {
-  color: var(--t3);
-  font-size: 0.8em;
-  padding: 1px 7px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--t4) 18%, transparent);
+[data-role='overseer.projectName'] {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
+
 /* A worktree and its tabs form one group, highlighted together when active. */
 [data-role='overseer.worktree'] {
   gap: 0;
   padding: 2px 4px;
-  border: 1px solid transparent;
   border-radius: 10px;
-  font-size: 0.9em;
 }
 [data-role='overseer.worktree']:hover {
-  background: color-mix(in srgb, var(--t4) 7%, transparent);
+  background: var(--l1);
 }
 [data-role='overseer.worktree'][data-mark='pick'] {
-  background: color-mix(in srgb, var(--accent) 9%, transparent);
-  border-color: color-mix(in srgb, var(--accent) 28%, transparent);
+  background: rgb(from var(--accent) r g b / 9%);
+  box-shadow: inset 0 0 0 1px rgb(from var(--accent) r g b / 28%);
 }
 [data-role='overseer.worktreeRow'] {
   gap: 1px;
   padding: 4px 8px;
   border-radius: 7px;
-  cursor: pointer;
 }
 [data-role='overseer.worktreeHead'] {
   align-items: center;
   gap: 8px;
 }
+[data-role='overseer.branch'],
+[data-role='overseer.tabName'] {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-role='overseer.branch'] {
+  font-weight: 500;
+}
 [data-role='overseer.worktreeSubtitle'] {
   color: var(--t3);
-  font-size: 0.82em;
+  font-family: var(--mono);
+  font-size: 11.5px;
   padding-left: 20px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -107,21 +90,24 @@
   padding: 3px 8px;
   border-radius: 6px;
   color: var(--t2);
-  font-size: 0.92em;
+  font-size: 12.5px;
 }
-[data-role='overseer.tabRow'].sf-act {
-  cursor: pointer;
+[data-role='overseer.tabRow'].sf-act:hover {
+  color: var(--t1);
+  background: var(--l1);
 }
-[data-role='overseer.branch'],
-[data-role='overseer.tabName'] {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+/* Sub-worktrees hang under their parent, indented past a hairline. */
+[data-role='overseer.children'] {
+  gap: 0;
+  margin: -2px 0 2px 18px;
+  padding-left: 4px;
+  box-shadow: inset 1px 0 0 var(--l2);
 }
-[data-role='overseer.branch'] {
-  font-weight: 600;
+[data-role='overseer.children'] [data-role='overseer.worktreeRow'] {
+  padding-top: 2px;
+  padding-bottom: 2px;
 }
+
 /* Every worktree status indicator (dot, glyph or 🧊) fills the same 12px
    square, so branch names line up whatever state a row is in. */
 [data-role='overseer.dotOpen'],
@@ -152,7 +138,7 @@
   background: var(--ok);
 }
 [data-role='overseer.dotIdle'] {
-  border: 1.5px solid var(--t4);
+  box-shadow: inset 0 0 0 1.5px var(--t4);
 }
 [data-role='overseer.dotBusy'] {
   background: var(--warn);
@@ -164,23 +150,22 @@
   animation: overseer-agent-pulse 1.6s ease-out infinite;
 }
 @keyframes overseer-agent-pulse {
-  from { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 70%, transparent); }
-  to { box-shadow: 0 0 0 6px color-mix(in srgb, var(--ok) 0%, transparent); }
+  from { box-shadow: 0 0 0 0 rgb(from var(--ok) r g b / 70%); }
+  to { box-shadow: 0 0 0 6px rgb(from var(--ok) r g b / 0%); }
 }
-/* States that need you show a bare glyph in the dot's place: a yellow ? when
-   an agent asked something, a green ✓ when it finished out of sight, a red !
+/* States that need you show a bare glyph in the dot's place: an amber ? when
+   an agent asked something, a green ✔ when it finished out of sight, a red !
    when its turn failed. */
 [data-role='overseer.statusWaiting'],
 [data-role='overseer.statusFailed'],
 [data-role='overseer.statusDone'] {
-  font-family: -apple-system, system-ui, sans-serif;
   font-size: 15px;
   font-weight: 900;
   line-height: 12px;
   text-align: center;
 }
 [data-role='overseer.statusWaiting'] {
-  color: #e0a800;
+  color: var(--warn);
 }
 [data-role='overseer.statusFailed'] {
   color: var(--bad);
@@ -192,7 +177,7 @@
   [data-role='overseer.dotAgent'],
   [data-role='overseer.dotTabAgent'] {
     animation: none;
-    box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 35%, transparent);
+    box-shadow: 0 0 0 3px rgb(from var(--ok) r g b / 35%);
   }
 }
 /* Ice Box worktrees show 🧊 in the dot's place. */
@@ -215,31 +200,13 @@
   background: var(--t4);
 }
 [data-role='overseer.dotTabWaiting'] {
-  background: #e0a800;
+  background: var(--warn);
 }
 [data-role='overseer.dotTabDone'] {
   background: var(--ok);
 }
 [data-role='overseer.dotTabFailed'] {
   background: var(--bad);
-}
-[data-role='overseer.badge'],
-[data-role='overseer.badgeWarn'],
-[data-role='overseer.badgeBad'] {
-  flex-shrink: 0;
-  font-size: 0.75em;
-  padding: 1px 6px;
-  border-radius: 999px;
-  color: var(--t3);
-  background: color-mix(in srgb, var(--t4) 18%, transparent);
-}
-[data-role='overseer.badgeWarn'] {
-  color: var(--warn);
-  background: color-mix(in srgb, var(--warn) 14%, transparent);
-}
-[data-role='overseer.badgeBad'] {
-  color: var(--bad);
-  background: color-mix(in srgb, var(--bad) 14%, transparent);
 }
 /* Uncommitted changes: a quiet mark hugging the name; hover the row for details. */
 [data-role='overseer.dirtyMark'] {
@@ -250,7 +217,7 @@
 }
 [data-role='overseer.openHint'] {
   color: var(--accent);
-  font-size: 0.8em;
+  font-size: 11px;
   opacity: 0;
   flex-shrink: 0;
   white-space: nowrap;
@@ -273,206 +240,30 @@
   width: 16px;
   height: 16px;
   min-width: 16px;
-  padding: 0;
-  border: 0;
-  cursor: pointer;
-  background-color: transparent;
   background-size: 16px 16px;
   background-repeat: no-repeat;
   background-position: center;
 }
-/* ↻ during an explicit refresh. */
-[data-role='overseer.refreshGlyph'],
-[data-role='overseer.refreshGlyphSpin'] {
-  display: inline-block;
-}
-[data-role='overseer.refreshGlyphSpin'] {
-  animation: overseer-spin 0.8s linear infinite;
-}
-@keyframes overseer-spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
-}
-@media (prefers-reduced-motion: reduce) {
-  [data-role='overseer.refreshGlyphSpin'] {
-    animation: none;
-    opacity: 0.5;
-  }
-}
-/* A project's worktrees are loading: a shimmering label, centered where its rows will appear. */
+/* Where a project's rows will appear while its worktrees load. */
 [data-role='overseer.loading'] {
-  align-items: center;
-  justify-content: center;
-  min-height: 56px;
-}
-[data-role='overseer.shimmer'] {
-  font-size: 0.9em;
-  color: transparent;
-  background-image: linear-gradient(90deg, var(--t3) 35%, var(--t1) 50%, var(--t3) 65%);
-  background-size: 200% 100%;
-  background-clip: text;
-  -webkit-background-clip: text;
-  animation: overseer-shimmer 1.8s linear infinite;
-}
-@keyframes overseer-shimmer {
-  from { background-position: 100% 0; }
-  to { background-position: -100% 0; }
-}
-@media (prefers-reduced-motion: reduce) {
-  [data-role='overseer.shimmer'] {
-    animation: none;
-    background-position: 50% 0;
-  }
-}
-[data-role='overseer.marker'],
-[data-role='overseer.hint'] {
-  color: var(--t3);
-  font-size: 0.9em;
-}
-[data-role='overseer.busy'] {
-  color: var(--warn);
-  font-size: 0.8em;
-}
-[data-role='overseer.done'],
-[data-role='overseer.failed'] {
-  font-size: 0.8em;
-  font-weight: 650;
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-[data-role='overseer.done'] {
-  color: var(--ok);
-}
-[data-role='overseer.failed'] {
-  color: var(--bad);
-}
-[data-role='overseer.button'],
-[data-role='overseer.primaryButton'],
-[data-role='overseer.iconButton'],
-[data-role='overseer.iconButtonOn'] {
-  color: var(--t2);
-  background: transparent;
-  border: 1px solid color-mix(in srgb, var(--t4) 30%, transparent);
-  border-radius: 6px;
-  padding: 4px 9px;
-  cursor: pointer;
-  font: inherit;
-  font-size: 0.9em;
-}
-[data-role='overseer.iconButton'],
-[data-role='overseer.iconButtonOn'] {
-  padding: 4px 8px;
-}
-/* The per-project New Worktree +: sized to match the worktree count beside it. */
-[data-role='overseer.projectHeader'] [data-role='overseer.iconButton'] {
-  padding: 0 5px;
-  font-size: 0.8em;
-  line-height: 16px;
-  border-radius: 5px;
-}
-/* A toggle that is on, e.g. Ice Box worktrees shown. */
-[data-role='overseer.iconButtonOn'] {
-  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
-  background: color-mix(in srgb, var(--accent) 10%, transparent);
-}
-[data-role='overseer.primaryButton'] {
-  color: var(--accent);
-  border-color: var(--accent);
-}
-[data-role='overseer.button']:hover,
-[data-role='overseer.primaryButton']:hover,
-[data-role='overseer.iconButton']:hover,
-[data-role='overseer.iconButtonOn']:hover,
-[data-role='overseer.projectToggle']:hover,
-[data-role='overseer.tabRow'].sf-act:hover {
-  color: var(--t1);
-  background: color-mix(in srgb, var(--accent) 9%, transparent);
-}
-[data-role^='overseer.']:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-[data-role='overseer.empty'] {
-  gap: 10px;
-  padding: 20px 4px;
-  align-items: flex-start;
-}
-[data-role='overseer.emptyTitle'] {
-  color: var(--t1);
-  font-weight: 600;
-}
-[data-role='overseer.error'] {
-  color: var(--bad);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
   padding: 8px 10px;
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--bad) 10%, transparent);
 }
-[data-role='overseer.message'] {
-  color: var(--t2);
-  white-space: pre-wrap;
+/* A forced deletion's file list reads like `git status --short`. */
+[data-role='overseer.changes'] {
   padding: 8px 10px;
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--t4) 12%, transparent);
+  border-radius: var(--r-ctl);
+  background: var(--l1);
+  font-family: var(--mono);
+  font-size: 12px;
 }
+/* The sub-worktrees a parent's deletion would take with it. */
+[data-role='overseer.family'] {
+  padding: 8px 10px;
+  border-radius: var(--r-ctl);
+  background: var(--l1);
+}
+
+/* The form block opens in sans (`font = "sans"`); only its padding is ours. */
 [data-role='overseer.form'] {
-  color: var(--t1);
   padding: 16px;
-  font-size: 0.93em;
-}
-[data-role='overseer.backLink'] {
-  margin: -4px 0 10px -6px;
-  padding: 3px 6px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--t3);
-  font: inherit;
-  font-size: 0.9em;
-  cursor: pointer;
-}
-[data-role='overseer.backLink']:hover,
-[data-role='overseer.backLink']:focus-visible {
-  color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 9%, transparent);
-}
-[data-role='overseer.formHeading'] {
-  margin-bottom: 12px;
-}
-[data-role='overseer.fieldLabel'] {
-  color: var(--t2);
-  margin: 14px 0 5px;
-  font-weight: 600;
-}
-[data-role='overseer.field'] {
-  border: 1px solid color-mix(in srgb, var(--t4) 40%, transparent);
-  border-radius: 4px;
-}
-[data-role='overseer.field'].focused {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-[data-role='overseer.formButtons'] {
-  gap: 8px;
-  margin: 18px 0 10px;
-}
-[data-role='overseer.confirmation'] {
-  gap: 8px;
-  padding: 14px;
-  border: 1px solid color-mix(in srgb, var(--warn) 55%, transparent);
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--warn) 6%, transparent);
-}
-[data-role='overseer.dangerButton'] {
-  color: var(--bad);
-  background: transparent;
-  border: 1px solid var(--bad);
-  border-radius: 6px;
-  padding: 5px 9px;
-  cursor: pointer;
-  font: inherit;
-}
-[data-role='overseer.dangerButton']:hover {
-  background: color-mix(in srgb, var(--bad) 10%, transparent);
 }

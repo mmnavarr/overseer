@@ -15,7 +15,7 @@ option=$5
 receipt=$6
 case "$mode" in
     create) label='Worktree creation' ;;
-    remove) label='Worktree removal' ;;
+    remove|force-remove) label='Worktree removal' ;;
     *) printf 'Unknown operation: %s\n' "$mode" >&2; exit 64 ;;
 esac
 recorded=0
@@ -69,9 +69,11 @@ receipt_tmp=$(/usr/bin/mktemp "${receipt}.tmp.XXXXXX") || exit 73
 printf '%s\n' "$$" > "${receipt}.pid" || exit 73
 
 remove_worktree() {
-    # Recheck identity and cleanliness immediately before handing off to wt.
-    # Use an absolute path, not a branch shortcut that could target another tree.
-    local root common target_common git_dir branch changes
+    # Recheck identity (and, unless forced, cleanliness) immediately before
+    # handing off to wt. Use an absolute path, not a branch shortcut that could
+    # target another tree. force-remove runs only after you confirmed the
+    # worktree's uncommitted changes in Overseer.
+    local force=$1 root common target_common git_dir branch changes
     root=$(git -C "$target" rev-parse --show-toplevel) || return 1
     common=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir) || return 1
     target_common=$(git -C "$target" rev-parse --path-format=absolute --git-common-dir) || return 1
@@ -85,12 +87,16 @@ remove_worktree() {
         printf 'Refusing removal: the worktree branch changed after confirmation.\n' >&2
         return 1
     fi
-    changes=$(git -C "$target" status --porcelain=v1 --untracked-files=normal) || return 1
-    if [ -n "$changes" ]; then
-        printf 'Refusing removal: worktree has uncommitted or untracked files.\n' >&2
-        return 1
+    if [ "$force" = no ]; then
+        changes=$(git -C "$target" status --porcelain=v1 --untracked-files=normal) || return 1
+        if [ -n "$changes" ]; then
+            printf 'Refusing removal: worktree has uncommitted or untracked files.\n' >&2
+            return 1
+        fi
+        "$wt" -C "$repo" remove --foreground --no-delete-branch -- "$target"
+    else
+        "$wt" -C "$repo" remove --foreground --no-delete-branch --force -- "$target"
     fi
-    "$wt" -C "$repo" remove --foreground --no-delete-branch -- "$target"
     local status=$?
     if [ "$status" -eq 0 ] && [ -e "$target" ]; then
         printf 'Removal returned success but the worktree path still exists.\n' >&2
@@ -103,8 +109,10 @@ remove_worktree() {
 # project/user hooks see the original terminal and retain approval prompts.
 if [ "$mode" = create ]; then
     "$wt" -C "$repo" switch --create --base "$option" --no-cd "$target"
+elif [ "$mode" = force-remove ]; then
+    remove_worktree yes
 else
-    remove_worktree
+    remove_worktree no
 fi
 status=$?
 record_status "$status"

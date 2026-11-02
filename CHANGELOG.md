@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+Requires Tern 0.9.9.
+
+- **Sub-worktrees.** A worktree can own others, shown nested under its row with a `▾ N` badge that folds them (folded, it takes the color of the sub-worktree agent that most needs you). omp agents create them with the new `overseer-subworktree` skill, which records the worktree it runs in as the owner; **Move under…** and **Make top-level** adopt or release existing ones. Deleting an owner asks whether its sub-worktrees go too: **Delete all** removes the clean ones and keeps any with uncommitted changes. The link lives in Worktrunk's per-branch `overseer-parent` variable, so `wt` and agents see it.
+- **The panel looks like Tern again.** Tern 0.9.9 gives HTML buttons its own chip look, which turned the project toggle and the header's **+**, ↻ and 🧊 into tall boxed chips. Every action is now Tern's own button: the header's Add project, Refresh and Ice Box toggle sit in one toolbar (Refresh spins while it works, the Ice Box toggle shows when it's on), the project's **+** and the ⓘ are quiet icon buttons, and the project name folds with a chevron instead of a boxed `▾`. Badges (Primary, conflicts, deleting, worktree gone, the worktree count) are Tern's badges.
+- **People's text in the UI face.** The panel and the forms draw labels, names and tab titles in Tern's sans face, as Tern's own views do; branches, paths and the change list stay monospaced.
+- **Right-click menus have icons and sections.** Worktree menus group Visualize PR, Rename… and the Ice Box apart from Close session and a red **Delete worktree**; project menus put Remove project… below the settings.
+- **Confirmations are Tern cards.** Force delete asks in a red card with a danger button, and its file list colors status codes, paths and line counts with the theme. Remove project asks in an accent card. The confirm button spins while the worktree is being checked.
+- **Loading, empty and error states are designed.** Loading worktrees shimmers, a project with no worktrees offers Refresh, a failed listing shows its message in an error card with Retry, and a first run shows one Add your first project button.
+- **The form uses Tern's fields.** Labels, the required mark and validation errors sit on each field; Back and Submit show their **esc** and **⏎** keys.
+- **Tab states can't be squeezed out.** A long tab name used to crush its **done** or **failed** label; the name now truncates and the state shows as a green **done** or red **failed** badge.
+- **Shorter tab names.** A GitHub pull request tab reads `#2796 feat(webapp): …` instead of `feat(webapp): … by user · Pull Request #2796 · owner/repo`, other GitHub tabs drop their ` · owner/repo`, and omp titles drop the ` · #123` the row's PR icon already shows. The full name is in the tooltip.
+- **Delete worktree deletes clean worktrees straight away.** A worktree with uncommitted or untracked changes now lists them (like `git status --short`, with line counts) instead of refusing, and **Force delete** removes the worktree with them. Branches are still always kept.
+- **Close session closes straight away**, without asking first. The worktree's files stay either way.
+- **Sessions of worktrees removed outside Overseer are flagged.** Removing a worktree with `wt remove`, `wt merge` or `git worktree remove` (yourself or through an agent) used to leave its session open and its records behind for good. On the next refresh a worktree that is neither listed nor on disk now shows as **worktree gone** under its project if its session is still open: clicking it still shows the session, and **Close session** on its menu closes it. Its display name and Ice Box entry are dropped, and so is the session record once the session is closed.
+- **Fixed:** Projects could fail with `Cannot read Worktrunk JSON: Worktrunk could not determine working-tree status for …/fallow-audit-base-…`. `fallow audit` briefly registers a worktree in the temp directory while it checks out its comparison base; Overseer now leaves those out of the worktree list.
+
 ## 2.2.0 (2026-10-28)
 
 Requires Tern 0.9.6.

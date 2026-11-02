@@ -23,10 +23,6 @@ ICONS = [
     ("[data-role='overseer.prClosed']", "git-pull-request-closed-16.svg", "#d1242f", "#f85149"),
     # Linear ticket link: Linear's dark mark on light, light mark on dark.
     ("[data-role='overseer.linear']", "linear.svg", "#222326", "#ffffff"),
-    # Help button beside the Projects heading: muted, accent blue on hover/focus.
-    ("[data-role='overseer.infoButton']", "info-16.svg", "#59636e", "#9198a1"),
-    ("[data-role='overseer.infoButton']:hover,\n[data-role='overseer.infoButton']:focus-visible",
-     "info-16.svg", "#0969da", "#4493f8"),
 ]
 
 

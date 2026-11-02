@@ -10,6 +10,8 @@ local inflight = {}
 local probing, dead = {}, {}
 local rendered = {}
 local collapsed = {}
+-- Parent worktrees whose sub-worktrees are folded away: path -> true. In memory, like `collapsed`.
+local folded = {}
 local confirmation
 local problem
 local lastRefresh = -15000
@@ -97,6 +99,10 @@ local function removing(path, jobs)
 	end
 	return false
 end
+
+-- Deletions being checked before they start or before their changes are
+-- shown: path -> request. In memory only; a reload just drops the check.
+local removalChecks = {}
 
 -- Agent CLIs recognised in terminals, by program name.
 local AGENTS = {
@@ -234,6 +240,37 @@ local function ticketFor(project, worktree)
 	return { id = id, url = "https://linear.app/" .. workspace .. "/issue/" .. id }
 end
 
+-- Sub-worktrees. A branch's `overseer-parent` link (entry.parents) names a
+-- branch; a worktree's owner is the top of that chain among the project's
+-- listed worktrees, so nesting is one level deep. A link to a branch without
+-- a listed worktree, a primary checkout as the child, or a cycle leaves the
+-- worktree on top. Returns path -> owner path.
+local function owners(entry)
+	local result = {}
+	if not entry or not entry.worktrees then return result end
+	local parents = entry.parents or {}
+	local byBranch = {}
+	for _, worktree in entry.worktrees do
+		if worktree.branch then byBranch[worktree.branch] = worktree end
+	end
+	for _, worktree in entry.worktrees do
+		if worktree.branch and not worktree.is_main then
+			local owner, branch, seen = nil, parents[worktree.branch], { [worktree.branch] = true }
+			while branch do
+				if seen[branch] then owner = nil; break end
+				local parent = byBranch[branch]
+				if not parent then break end
+				owner = parent
+				if parent.is_main then break end
+				seen[branch] = true
+				branch = parents[branch]
+			end
+			if owner then result[worktree.path] = owner.path end
+		end
+	end
+	return result
+end
+
 local function model(cx)
 	local sessions = sessionsById(cx)
 	local names = records("worktree-names")
@@ -254,30 +291,86 @@ local function model(cx)
 			loading = not entry or entry.loading, error = entry and entry.error, worktrees = {}, hiddenIced = 0,
 			total = entry and entry.worktrees and #entry.worktrees or 0,
 		}
-		local iced = {}
+		local ownerOf = owners(entry)
+		local items, byPath = {}, {}
 		for _, worktree in (entry and entry.worktrees or {}) do
 			local item = table.clone(worktree)
 			item.deleting = removing(worktree.path, jobs)
+			item.checking = removalChecks[worktree.path] ~= nil
 			item.displayName = names[project.id] and names[project.id][worktree.path]
 			item.pr = not worktree.is_main and worktree.branch and entry.prs and entry.prs[worktree.branch] or nil
 			item.ticket = ticketFor(project, worktree)
+			item.parentLink = worktree.branch and entry.parents and entry.parents[worktree.branch] or nil
 			local session = boundSession(worktree.path, sessions, bindings)
 			item.session, item.tabs = session, session and tabs[tostring(session.id)] or {}
 			item.agent = session and activity.sessions[tostring(session.id)]
-			local active = session ~= nil and session.id == current.id
-			if active then result.activePath = worktree.path end
+			item.active = session ~= nil and session.id == current.id
+			if item.active then result.activePath = worktree.path end
 			item.iced = not worktree.is_main and icebox[project.id] ~= nil and icebox[project.id][worktree.path] == true
-			if not item.iced then
-				table.insert(row.worktrees, item)
-			elseif showIcebox or active then
-				-- The active worktree stays visible even while the Ice Box is hidden.
-				table.insert(iced, item)
-			else
-				row.hiddenIced += 1
+			table.insert(items, item)
+			byPath[worktree.path] = item
+		end
+		-- Sub-worktrees go under their owner, Ice Box ones last. An iced owner
+		-- parks its sub-worktrees with it; the active one always shows.
+		for _, item in items do
+			local owner = ownerOf[item.path] and byPath[ownerOf[item.path]]
+			if owner then
+				owner.family = owner.family or {}
+				table.insert(owner.family, item)
+				if item.active then owner.activeChild = true end
+			end
+		end
+		local iced = {}
+		for _, item in items do
+			if not ownerOf[item.path] then
+				local shown, shownIced = {}, {}
+				for _, child in (item.family or {}) do
+					local parked = child.iced or item.iced
+					if not parked then
+						table.insert(shown, child)
+					elseif showIcebox or child.active then
+						table.insert(shownIced, child)
+					else
+						row.hiddenIced += 1
+					end
+					if (AGENT_RANK[child.agent] or 0) > (AGENT_RANK[item.childAgent] or 0) then item.childAgent = child.agent end
+				end
+				for _, child in shownIced do table.insert(shown, child) end
+				item.family = nil
+				if #shown > 0 then
+					item.children = shown
+					-- Folding never hides where you are.
+					item.folded = folded[item.path] == true and not item.activeChild
+				end
+				if not item.iced then
+					table.insert(row.worktrees, item)
+				elseif showIcebox or item.active or item.activeChild then
+					-- The active worktree stays visible even while the Ice Box is hidden.
+					table.insert(iced, item)
+				else
+					row.hiddenIced += 1 + #shown
+				end
 			end
 		end
 		-- Ice Box worktrees sink to the bottom, keeping their relative order.
 		for _, item in iced do table.insert(row.worktrees, item) end
+		-- Sessions of worktrees removed outside Overseer stay flagged until closed.
+		local gonePaths = {}
+		for path in (entry and entry.gone or {}) do table.insert(gonePaths, path) end
+		table.sort(gonePaths)
+		for _, path in gonePaths do
+			local session = boundSession(path, sessions, bindings)
+			if session then
+				if session.id == current.id then result.activePath = path end
+				local prefix = project.name .. " / "
+				local name = tostring(session.name or path)
+				table.insert(row.worktrees, {
+					path = path, gone = true, session = session,
+					label = if string.sub(name, 1, #prefix) == prefix then string.sub(name, #prefix + 1) else name,
+					tabs = tabs[tostring(session.id)] or {}, agent = activity.sessions[tostring(session.id)],
+				})
+			end
+		end
 		table.insert(result.projects, row)
 	end
 	return result
@@ -386,6 +479,23 @@ local function refreshPullRequests(project, entry)
 	end)
 end
 
+-- Sub-worktree links (`overseer-parent`), read beside each listing. A failed
+-- read keeps the last links, so rows don't jump out of their parents.
+local function refreshParents(project, entry)
+	if entry.parentsLoading then return end
+	entry.parentsLoading = true
+	wt.parents(project, function(found, err, cx)
+		entry.parentsLoading = false
+		if found then
+			entry.parents, entry.parentsError = found, nil
+		elseif err ~= entry.parentsError then
+			entry.parentsError = err
+			tern.log.warn("Sub-worktree links unavailable for " .. project.name .. ": " .. tostring(err))
+		end
+		if cx then redraw(cx) end
+	end)
+end
+
 local function inferLinear()
 	if linearDefault ~= nil then return end
 	linearDefault = false
@@ -397,6 +507,45 @@ local function inferLinear()
 			tern.log.info("Linear ticket links need a workspace: " .. tostring(err))
 		end
 	end)
+end
+
+-- Worktrees removed outside Overseer (an agent's `wt merge`, `wt remove` in a
+-- shell) leave their records behind. After a listing succeeds, a recorded path
+-- that is neither listed nor on disk is gone: its display name and Ice Box
+-- entry are dropped, and so is its session binding unless that session is
+-- still open, in which case the panel flags it (`entry.gone`) for you to close.
+local function reconcileGone(cx, project, entry)
+	local listed = {}
+	for _, worktree in entry.worktrees do listed[worktree.path] = true end
+	local jobs = records("jobs")
+	local function gone(path)
+		return not listed[path] and not removing(path, jobs) and not tern.fs.exists(path)
+	end
+	entry.gone = {}
+	local sessions = sessionsById(cx)
+	local bindings, unbound = records("sessions"), false
+	for path, binding in bindings do
+		if binding.project == project.id and gone(path) then
+			if boundSession(path, sessions, bindings) then
+				entry.gone[path] = true
+			else
+				bindings[path] = nil
+				unbound = true
+			end
+		end
+	end
+	if unbound then tern.kv.set("sessions", bindings) end
+	for _, key in { "worktree-names", "icebox" } do
+		local store = records(key)
+		local paths, dropped = store[project.id], false
+		for path in (paths or {}) do
+			if gone(path) then
+				paths[path] = nil
+				dropped = true
+			end
+		end
+		if dropped then tern.kv.set(key, store) end
+	end
 end
 
 -- `done` runs once every worktree listing this call started has finished.
@@ -413,9 +562,11 @@ local function refresh(cx, done)
 		if not entry.loading then
 			entry.loading = true
 			pending += 1
+			refreshParents(project, entry)
 			wt.list(project, function(worktrees, err, nextCx)
 				entry.loading, entry.error = false, err
 				if worktrees then entry.worktrees = worktrees end
+				if worktrees and nextCx then reconcileGone(nextCx, project, entry) end
 				pending -= 1
 				if pending == 0 and done and nextCx then done(nextCx) end
 				if nextCx then redraw(nextCx) end
@@ -668,7 +819,17 @@ local function openWorktree(cx, path)
 	if not requireLocal(cx) then return end
 	if removing(path) then report(cx, "Check the Delete tab.", "Deletion in progress"); return end
 	local project, worktree = findWorktree(path)
-	if not project then report(cx, "Worktree not found. Refresh Projects."); return end
+	if not project then
+		-- A worktree removed outside Overseer: its flagged session can still be shown.
+		local session = boundSession(path, sessionsById(cx))
+		if session and not tern.fs.exists(path) then
+			cx.sessions:switch(session.id)
+			follow(cx)
+			redraw(cx)
+			return
+		end
+		report(cx, "Worktree not found. Refresh Projects."); return
+	end
 	if not tern.fs.exists(path) then report(cx, "Worktree directory is missing: " .. path, "Worktree unavailable"); refresh(cx); return end
 	ensureSession(cx, project, path, worktree.branch)
 	redraw(cx)
@@ -728,23 +889,6 @@ local function closeManagedSession(cx, path, expected)
 	bindings[path] = nil
 	tern.kv.set("sessions", bindings)
 	return true
-end
-
-local function requestWorktreeAction(cx, kind, path)
-	local project, worktree = findWorktree(path)
-	if not project then report(cx, "Worktree not found. Refresh Projects."); return end
-	if removing(path) then report(cx, "This worktree is already being deleted."); return end
-	local session, err = closeGuard(cx, path)
-	if err then report(cx, err); return end
-	if kind == "close" and not session then report(cx, "This worktree has no open session."); return end
-	if kind == "delete" and (worktree.is_main or path == project.path) then
-		report(cx, "The primary checkout cannot be deleted."); return
-	end
-	confirmation = {
-		id = token(), kind = kind, path = path, label = worktree.branch or "Detached HEAD",
-		project = project.id, worktree = table.clone(worktree),
-	}
-	redraw(cx)
 end
 
 -- Removing a project only stops Overseer tracking it. Display names, Ice Box
@@ -828,32 +972,28 @@ local function outputSession(cx, project, target)
 	return nil
 end
 
-local function confirmWorktreeAction(cx, id)
-	local request = confirmation
-	if not request or request.id ~= id or request.checking then return end
-	if request.kind == "remove-project" then removeProject(cx, request); return end
-	if request.kind == "close" then
-		confirmation = nil
-		local ok, err = closeManagedSession(cx, request.path)
-		if not ok then report(cx, err, "Session closure failed") else
-			cx:toast("info", "Session closed", notificationLabel(request.label))
-		end
-		redraw(cx)
-		return
-	end
+-- Starts a deletion. Rechecks the worktree, then removes it straight away when
+-- it's clean. With uncommitted changes and no `request.force` yet, it shows the
+-- changes for you to confirm instead; confirming calls back here with force set.
+local function beginRemoval(cx, request)
 	local project = projectById(request.project)
-	if not project then confirmation = nil; report(cx, "Project is no longer registered."); redraw(cx); return end
-	request.checking = true
+	if not project then
+		if confirmation == request then confirmation = nil end
+		report(cx, "Project is no longer registered."); redraw(cx); return
+	end
+	removalChecks[request.path] = request
 	redraw(cx)
-	wt.validate_removal(project, request.worktree, function(worktree, err, nextCx)
-		-- Cancelling or reloading while validation runs never starts a deletion.
-		if not nextCx or confirmation ~= request then return end
-		local function failed(freshCx, text)
-			confirmation = nil
-			report(freshCx, text, "Worktree deletion failed")
-			refresh(freshCx)
-		end
-		if not worktree then failed(nextCx, err); return end
+	local function current(nextCx)
+		-- Cancelling or reloading while a check runs never starts a deletion.
+		return nextCx ~= nil and removalChecks[request.path] == request
+	end
+	local function failed(freshCx, text)
+		removalChecks[request.path] = nil
+		if confirmation == request then confirmation = nil end
+		report(freshCx, text, "Worktree deletion failed")
+		refresh(freshCx)
+	end
+	local function launch(nextCx, worktree, force)
 		local _, guardError = closeGuard(nextCx, request.path)
 		if guardError then failed(nextCx, guardError); return end
 		local jobs = records("jobs")
@@ -864,7 +1004,7 @@ local function confirmWorktreeAction(cx, id)
 		end
 		local jobId = token()
 		local receipt = tern.plugin.data .. "/removal-" .. jobId .. ".status"
-		local ready, command = pcall(wt.removal_command, project, worktree, receipt)
+		local ready, command = pcall(wt.removal_command, project, worktree, receipt, force)
 		if not ready then failed(nextCx, command); return end
 		-- Like creation, the output tab opens in the background; you stay put.
 		local terminal = nextCx.layout:new_tab({ cwd = project.path, command = command }, { focus = false })
@@ -884,10 +1024,165 @@ local function confirmWorktreeAction(cx, id)
 			session = target,
 		}
 		tern.kv.set("jobs", jobs)
-		confirmation = nil
+		removalChecks[request.path] = nil
+		if confirmation == request then confirmation = nil end
 		nextCx:toast("info", "Deleting worktree", notificationLabel(request.label))
 		redraw(nextCx)
+	end
+	wt.validate_removal(project, request.worktree, function(worktree, err, nextCx)
+		if not current(nextCx) then return end
+		if not worktree then failed(nextCx, err); return end
+		if request.force or not worktree.dirty then launch(nextCx, worktree, request.force); return end
+		-- A sub-worktree deleted along with its parent never loses work: keep it.
+		if request.keepIfDirty then
+			removalChecks[request.path] = nil
+			nextCx:toast("info", "Kept sub-worktree", notificationLabel(request.label) .. " has uncommitted changes")
+			redraw(nextCx)
+			return
+		end
+		wt.local_changes(worktree.path, function(changes, changesError, changesCx)
+			if not current(changesCx) then return end
+			if not changes then failed(changesCx, changesError); return end
+			-- Clean again by now: the helper still refuses if that changes before it runs.
+			if changes.total == 0 then launch(changesCx, worktree, false); return end
+			removalChecks[request.path] = nil
+			request.worktree, request.changes, request.force = table.clone(worktree), changes, true
+			confirmation = request
+			redraw(changesCx)
+		end)
 	end)
+end
+
+-- Deletes a parent alone, or with its sub-worktrees. Each one goes through its
+-- own check, in a callback of its own: clean ones go at once, a dirty
+-- sub-worktree is kept, and a dirty parent asks for Force delete as usual.
+local function deleteFamily(cx, request, all)
+	confirmation = nil
+	local project, parent = findWorktree(request.path)
+	if not project then report(cx, "Worktree not found. Refresh Projects."); redraw(cx); return end
+	if all then
+		for _, child in request.children do
+			separately("delete " .. child.label, function(nextCx)
+				local childProject, worktree = findWorktree(child.path)
+				if not childProject or removing(child.path) or removalChecks[child.path] then return end
+				beginRemoval(nextCx, {
+					id = token(), kind = "delete", path = child.path, label = worktree.branch or child.label,
+					project = childProject.id, worktree = table.clone(worktree), force = false, keepIfDirty = true,
+				})
+			end)
+		end
+	end
+	if removalChecks[request.path] then return end
+	beginRemoval(cx, {
+		id = token(), kind = "delete", path = request.path, label = request.label,
+		project = project.id, worktree = table.clone(parent), force = false,
+	})
+end
+
+local function confirmWorktreeAction(cx, id, all)
+	local request = confirmation
+	if not request or request.id ~= id or request.checking then return end
+	if request.kind == "remove-project" then removeProject(cx, request); return end
+	if request.kind == "delete-family" then deleteFamily(cx, request, all == true); return end
+	request.checking = true
+	beginRemoval(cx, request)
+end
+
+-- Links `branch` under `parent` (nil: top level). The panel moves at once;
+-- the links are read back afterwards, so what Worktrunk stored wins.
+local function setParent(cx, project, branch, parent)
+	local entry = cache[project.id]
+	if entry then
+		entry.parents = entry.parents or {}
+		entry.parents[branch] = parent
+		redraw(cx)
+	end
+	wt.set_parent(project, branch, parent, function(ok, err, nextCx)
+		if not ok and nextCx then report(nextCx, err, "Couldn't move the worktree") end
+		if entry then refreshParents(project, entry) end
+	end)
+end
+
+-- Picks a new parent for a worktree among the top-level ones: a sub-worktree
+-- can't own others, and a worktree's own sub-worktrees can't own it.
+local function moveUnder(cx, path)
+	local project, worktree = findWorktree(path)
+	if not project or not worktree.branch then report(cx, "Worktree not found. Refresh Projects."); return end
+	if worktree.is_main then report(cx, "The primary checkout can't be a sub-worktree."); return end
+	local entry = cache[project.id]
+	local ownerOf = owners(entry)
+	local names = records("worktree-names")[project.id] or {}
+	local link = entry.parents and entry.parents[worktree.branch]
+	local items = {}
+	for _, candidate in entry.worktrees do
+		if candidate.branch and candidate.path ~= path and not ownerOf[candidate.path] then
+			local name = names[candidate.path]
+			table.insert(items, {
+				label = name or candidate.branch, detail = if name then candidate.branch else nil,
+				icon = "branch", current = link == candidate.branch, branch = candidate.branch,
+			})
+		end
+	end
+	if #items == 0 then report(cx, "No other worktree can own this one."); return end
+	cx:pick({
+		items = items, icon = "corner-down-right", action = "move",
+		placeholder = "Move " .. (names[path] or worktree.branch) .. " under…",
+	}):next(function(item, _err, nextCx)
+		if not item or not nextCx or type(item.branch) ~= "string" then return end
+		setParent(nextCx, project, worktree.branch, item.branch)
+	end)
+end
+
+local function makeTopLevel(cx, path)
+	local project, worktree = findWorktree(path)
+	if not project or not worktree.branch then report(cx, "Worktree not found. Refresh Projects."); return end
+	setParent(cx, project, worktree.branch, nil)
+end
+
+local function requestWorktreeAction(cx, kind, path)
+	local project, worktree = findWorktree(path)
+	local binding = records("sessions")[path]
+	-- A worktree removed outside Overseer is no longer listed; only its session can be closed.
+	if not project and not (kind == "close" and binding) then report(cx, "Worktree not found. Refresh Projects."); return end
+	if removing(path) then report(cx, "This worktree is already being deleted."); return end
+	local session, err = closeGuard(cx, path)
+	if err then report(cx, err); return end
+	local label = if worktree then worktree.branch or "Detached HEAD" else tostring(session and session.name or path)
+	if kind == "close" then
+		-- Closing a session needs no confirmation: the worktree's files stay.
+		if not session then report(cx, "This worktree has no open session."); return end
+		local ok, closeError = closeManagedSession(cx, path)
+		if not ok then report(cx, closeError, "Session closure failed") else
+			cx:toast("info", "Session closed", notificationLabel(label))
+		end
+		redraw(cx)
+		return
+	end
+	if worktree.is_main or path == project.path then
+		report(cx, "The primary checkout cannot be deleted."); return
+	end
+	if removalChecks[path] then return end
+	-- A parent asks whether its sub-worktrees go too.
+	local entry = cache[project.id]
+	local ownerOf = owners(entry)
+	local names = records("worktree-names")[project.id] or {}
+	local family = {}
+	for _, other in entry.worktrees do
+		if ownerOf[other.path] == path then
+			table.insert(family, { path = other.path, label = names[other.path] or other.branch or other.path, dirty = other.dirty })
+		end
+	end
+	if #family > 0 then
+		confirmation = {
+			id = token(), kind = "delete-family", path = path, label = label, project = project.id, children = family,
+		}
+		redraw(cx)
+		return
+	end
+	beginRemoval(cx, {
+		id = token(), kind = "delete", path = path, label = label,
+		project = project.id, worktree = table.clone(worktree), force = false,
+	})
 end
 
 -- Forms take the Projects panel's place, like a page within it, and follow you
@@ -1475,41 +1770,48 @@ local function canvasAction(ev, cx)
 	elseif ev.act == "refresh" then
 		refreshByHand(cx)
 	elseif ev.act == "collapse" then collapsed[ev.value] = not collapsed[ev.value]; redraw(cx)
+	elseif ev.act == "fold" then folded[ev.value] = if folded[ev.value] then nil else true; redraw(cx)
+	elseif ev.act == "move-under" then moveUnder(cx, view.worktreePath(ev.node))
+	elseif ev.act == "make-top-level" then makeTopLevel(cx, view.worktreePath(ev.node))
 	elseif ev.act == "create" then
 		local project = projectById(ev.value)
 		if project then openForm(cx, "create", project) end
 	elseif ev.act == "open-worktree" then openWorktree(cx, ev.value)
-	elseif ev.act == "Add to Ice Box" or ev.act == "Remove from Ice Box" then
-		-- Menu entries show their action verbatim, so these read as titled.
+	elseif ev.act == "icebox-add" or ev.act == "icebox-remove" then
 		local project, worktree = findWorktree(view.worktreePath(ev.node))
 		if not project then report(cx, "Worktree not found. Refresh Projects."); return end
 		local icebox = records("icebox")
 		icebox[project.id] = icebox[project.id] or {}
-		icebox[project.id][worktree.path] = if ev.act == "Add to Ice Box" then true else nil
+		icebox[project.id][worktree.path] = if ev.act == "icebox-add" then true else nil
 		tern.kv.set("icebox", icebox)
 		redraw(cx)
 	elseif ev.act == "toggle-icebox" then
 		tern.kv.set("show-icebox", tern.kv.get("show-icebox") == false)
 		redraw(cx)
-	elseif ev.act == "Change base branch" or ev.act == "Set Linear workspace" then
+	elseif ev.act == "change-base" or ev.act == "set-linear" then
 		local project = projectById(view.projectId(ev.node))
-		if project then openForm(cx, if ev.act == "Change base branch" then "base" else "linear", project)
+		if project then openForm(cx, if ev.act == "change-base" then "base" else "linear", project)
 		else report(cx, "Project not found. Refresh Projects.") end
-	elseif ev.act == "Remove project" then
+	elseif ev.act == "remove-project" then
 		requestProjectRemoval(cx, view.projectId(ev.node))
-	elseif ev.act == "Visualize PR" then
+	elseif ev.act == "visualize" then
 		visualizePr(cx, view.worktreePath(ev.node))
-	elseif ev.act == "Rename" then
+	elseif ev.act == "rename" then
 		local project, worktree = findWorktree(view.worktreePath(ev.node))
 		if project then openForm(cx, "rename", project, worktree)
 		else report(cx, "Worktree not found. Refresh Projects.") end
-	elseif ev.act == "Close session" then
+	elseif ev.act == "close-session" then
 		requestWorktreeAction(cx, "close", view.worktreePath(ev.node))
-	elseif ev.act == "Delete worktree" then
+	elseif ev.act == "delete-worktree" then
 		requestWorktreeAction(cx, "delete", view.worktreePath(ev.node))
 	elseif ev.act == "confirm" then confirmWorktreeAction(cx, ev.value)
+	elseif ev.act == "confirm-all" then confirmWorktreeAction(cx, ev.value, true)
 	elseif ev.act == "cancel" then
-		if confirmation and confirmation.id == ev.value then confirmation = nil; redraw(cx) end
+		if confirmation and confirmation.id == ev.value then
+			if removalChecks[confirmation.path] == confirmation then removalChecks[confirmation.path] = nil end
+			confirmation = nil
+			redraw(cx)
+		end
 	elseif ev.act == "tab" then
 		local pane = tonumber(ev.value)
 		if pane and cx.session:pane(pane) then cx.layout:focus(pane) end
@@ -1518,9 +1820,9 @@ end
 
 local CANVAS_ACTIONS = {}
 for _, act in {
-	"help", "add", "refresh", "collapse", "create", "open-worktree", "link", "Add to Ice Box", "Remove from Ice Box",
-	"toggle-icebox", "Change base branch", "Set Linear workspace", "Remove project", "Visualize PR", "Rename",
-	"Close session", "Delete worktree", "confirm", "cancel", "tab",
+	"help", "add", "refresh", "collapse", "create", "open-worktree", "link", "icebox-add", "icebox-remove",
+	"toggle-icebox", "change-base", "set-linear", "remove-project", "visualize", "rename",
+	"close-session", "delete-worktree", "confirm", "confirm-all", "cancel", "tab", "fold", "move-under", "make-top-level",
 } do CANVAS_ACTIONS[act] = true end
 
 -- Clicks only queue their work: an overrun here would pause the hook and

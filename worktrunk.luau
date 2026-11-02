@@ -244,6 +244,13 @@ local function divergence(value)
 	return { ahead = ahead, behind = behind, name = if type(value.name) == "string" then value.name else nil }
 end
 
+-- `fallow audit` registers a detached worktree in the temp directory while it checks
+-- out its base snapshot, then deregisters it. A listing that lands in that window has
+-- no working-tree status for it, and it is never one of the user's worktrees.
+local function is_fallow_snapshot(path)
+	return string.find(path, "/fallow%-audit%-base%-[^/]*$") ~= nil
+end
+
 local function parse_worktrees(text, project)
 	local value = tern.json.decode(text)
 	local schema2 = type(value) == "table" and value.schema ~= nil
@@ -268,6 +275,9 @@ local function parse_worktrees(text, project)
 			local changes = if schema2 then (if type(facts) == "table" then facts.changes else nil) else row.working_tree
 			if type(path) ~= "string" or string.sub(path, 1, 1) ~= "/" or string.find(path, "\0", 1, true) then
 				error("Worktrunk returned a worktree without a valid absolute path", 0)
+			end
+			if is_fallow_snapshot(path) then
+				continue
 			end
 			if type(main) ~= "boolean" or type(detached) ~= "boolean" then
 				error("Worktrunk returned invalid main/detached flags for " .. path, 0)
@@ -353,6 +363,55 @@ local function branch_error(branch)
 	return nil
 end
 
+-- Sub-worktrees: a branch's parent is the Worktrunk per-branch variable
+-- `overseer-parent`, so agents, `wt` and every Overseer install read the same link.
+local PARENT_KEY = "overseer-parent"
+
+-- done(map of child branch -> parent branch, err, cx). Read-only.
+function M.parents(project, done)
+	local ok, wt = pcall(resolve_wt)
+	if not ok then
+		deferred_error(done, tostring(wt))
+		return
+	end
+	run({ wt, "-C", project.path, "config", "state", "get", "--format=json" }, function(result, err, cx)
+		if not result then done(nil, err, cx); return end
+		if result.status ~= 0 then done(nil, command_error("Cannot read sub-worktree links", result), cx); return end
+		local parsed, value = pcall(tern.json.decode, result.stdout)
+		if not parsed or type(value) ~= "table" then done(nil, "Cannot read Worktrunk state JSON", cx); return end
+		local parents = {}
+		for _, var in (if type(value.vars) == "table" then value.vars else {}) do
+			if type(var) == "table" and var.key == PARENT_KEY and type(var.branch) == "string"
+				and type(var.value) == "string" and var.value ~= "" and var.value ~= var.branch then
+				parents[var.branch] = var.value
+			end
+		end
+		done(parents, nil, cx)
+	end)
+end
+
+-- Links `branch` under `parent`, or unlinks it when `parent` is nil. done(true, err, cx)
+function M.set_parent(project, branch, parent, done)
+	local invalid = branch_error(branch) or (parent and branch_error(parent))
+	if invalid then
+		deferred_error(done, invalid)
+		return
+	end
+	local ok, wt = pcall(resolve_wt)
+	if not ok then
+		deferred_error(done, tostring(wt))
+		return
+	end
+	local argv = if parent
+		then { wt, "-C", project.path, "config", "state", "vars", "set", "--branch=" .. branch, PARENT_KEY .. "=" .. parent }
+		else { wt, "-C", project.path, "config", "state", "vars", "clear", "--branch=" .. branch, PARENT_KEY }
+	run(argv, function(result, err, cx)
+		if not result then done(nil, err, cx)
+		elseif result.status ~= 0 then done(nil, command_error("Cannot save the sub-worktree link", result), cx)
+		else done(true, nil, cx) end
+	end)
+end
+
 function M.validate(project, branch, done)
 	local invalid = branch_error(branch)
 	if invalid then
@@ -392,6 +451,8 @@ function M.validate(project, branch, done)
 	end)
 end
 
+-- Rechecks the worktree's identity right before a removal. A dirty worktree
+-- still validates; the caller decides whether its changes need confirming.
 function M.validate_removal(project, worktree, done)
 	M.list(project, function(trees, err, cx)
 		if not trees then done(nil, err, cx); return end
@@ -399,8 +460,6 @@ function M.validate_removal(project, worktree, done)
 			if current.path == worktree.path then
 				if current.is_main or current.path == project.path then
 					done(nil, "The primary checkout cannot be deleted.", cx)
-				elseif current.dirty then
-					done(nil, "Commit, stash, or move changes first.", cx)
 				elseif current.branch ~= worktree.branch then
 					done(nil, "Branch changed. Refresh Projects.", cx)
 				else
@@ -410,6 +469,42 @@ function M.validate_removal(project, worktree, done)
 			end
 		end
 		done(nil, "Worktree not found. Refresh Projects.", cx)
+	end)
+end
+
+local CHANGES_SHOWN = 200
+
+-- What a removal would lose, like `git status --short` with line counts:
+-- done({files = {{code, path, added?, deleted?}}, total}, err, cx). Untracked
+-- directories are one entry, as in `git status`; only the first CHANGES_SHOWN
+-- entries are kept. Read-only.
+function M.local_changes(path, done)
+	git(path, { "status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=normal" }, function(status, err, cx)
+		if not status then done(nil, err, cx); return end
+		if status.status ~= 0 then done(nil, command_error("Cannot read worktree changes", status), cx); return end
+		git(path, { "diff", "HEAD", "--numstat", "-z", "--no-renames" }, function(diff, diff_err, next_cx)
+			if not diff then done(nil, diff_err, next_cx); return end
+			-- Line counts are a nicety: a failed diff (e.g. no commits yet) still lists the files.
+			local lines = {}
+			if diff.status == 0 then
+				for added, deleted, file in string.gmatch(diff.stdout, "([%d%-]+)\t([%d%-]+)\t([^\0]*)\0") do
+					lines[file] = { added = tonumber(added), deleted = tonumber(deleted) }
+				end
+			end
+			local files, total = {}, 0
+			for code, file in string.gmatch(status.stdout, "(..) ([^\0]*)\0") do
+				total += 1
+				if total <= CHANGES_SHOWN then
+					-- Untracked entries have no diff against HEAD; a same-named deleted file's counts aren't theirs.
+					local count = if code == "??" then nil else lines[file]
+					table.insert(files, {
+						code = code, path = file,
+						added = count and count.added, deleted = count and count.deleted,
+					})
+				end
+			end
+			done({ files = files, total = total }, nil, next_cx)
+		end)
 	end)
 end
 
@@ -447,11 +542,12 @@ function M.creation_command(project, branch, receipt)
 	return operation_command("create", project, branch, project.base, receipt)
 end
 
-function M.removal_command(project, worktree, receipt)
+-- `force` removes uncommitted and untracked files too; only after you confirmed them.
+function M.removal_command(project, worktree, receipt, force)
 	if worktree.is_main or worktree.path == project.path then
 		error("The primary checkout cannot be deleted.", 0)
 	end
-	return operation_command("remove", project, worktree.path, worktree.branch or "", receipt)
+	return operation_command(if force then "force-remove" else "remove", project, worktree.path, worktree.branch or "", receipt)
 end
 
 -- "git@github.com:owner/repo.git", "https://github.com/owner/repo", "ssh://git@github.com/owner/repo.git"

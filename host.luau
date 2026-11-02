@@ -1,8 +1,14 @@
 local ui = tern.ui
 local Input = require("./input")
 
-local function text(key, value, role)
-	return ui.node("text", { key = key, text = value, role = role })
+local LABELS = {
+	name = "Display name", branch = "Branch name", base = "Base branch", linear = "Workspace URL or name",
+}
+local REQUIRED = { branch = true, base = true }
+
+-- Each input sits in a `field` keyed by its name, so its node id nests.
+local function inputId(name)
+	return "main.field-" .. name .. "." .. name
 end
 
 -- Everything that differs between the form's modes. The first field takes focus.
@@ -39,7 +45,7 @@ end
 
 local function focus(state, cx)
 	pcall(function()
-		cx:frame({ { "focus", "main." .. state.focus } })
+		cx:frame({ { "focus", inputId(state.focus) } })
 	end)
 end
 
@@ -54,7 +60,7 @@ local function finish(state, cancelled)
 		response = { mode = "rename", name = state.fields.name.text }
 	elseif state.mode == "base" then
 		if not string.find(state.fields.base.text, "%S") then
-			state.error = "Enter a local branch name."
+			state.error, state.errorField = "Enter a local branch name.", "base"
 			state.focus = "base"
 			return
 		end
@@ -63,7 +69,7 @@ local function finish(state, cancelled)
 		response = { mode = "linear", linear = state.fields.linear.text }
 	else
 		if not string.find(state.fields.branch.text, "%S") then
-			state.error = "Enter a branch name."
+			state.error, state.errorField = "Enter a branch name.", "branch"
 			state.focus = "branch"
 			return
 		end
@@ -71,13 +77,15 @@ local function finish(state, cancelled)
 	end
 	local ok, err = pcall(tern.kv.set, "form:" .. state.token, response)
 	if not ok then
-		state.error = "Could not send form: " .. tostring(err)
+		state.error, state.errorField = "Could not send form: " .. tostring(err), nil
 		return
 	end
-	state.submitted, state.cancelled, state.error = true, cancelled, nil
+	state.submitted, state.cancelled, state.error, state.errorField = true, cancelled, nil, nil
 end
 
 tern.block.define("form", {
+	-- People's text in the UI face; inputs stay mono.
+	font = "sans",
 	init = function(_cx, args, saved)
 		local mode = if MODES[args[2]] then args[2] else "create"
 		local state = {
@@ -124,42 +132,43 @@ tern.block.define("form", {
 	view = function(state, cx)
 		local heading = MODES[state.mode].heading
 		local children = {
-			-- In a row so the link is only as wide as its text, not the whole pane.
 			ui.node("row", { key = "nav" }, {
-				ui.el("button", {
-					key = "back", role = "overseer.backLink", text = "← Projects",
-					title = "Back to Projects (Esc)", actions = { click = "cancel" },
+				ui.button("Projects", {
+					key = "back", icon = "back", variant = "quiet", size = "sm", keys = { "esc" },
+					title = "Back to Projects", actions = { click = "cancel" },
 				}),
 			}),
-			text("heading", heading, "overseer.formHeading"),
+			ui.node("text", { key = "heading", spans = { ui.span(heading, "title") } }),
 		}
 		if state.submitted then
-			table.insert(children, text("submitted", if state.cancelled then "Returning to Projects…" else "Working…", "overseer.message"))
+			table.insert(children, ui.node("shimmer", {
+				key = "submitted", text = if state.cancelled then "Returning to Projects…" else "Working…",
+			}))
 		else
-			table.insert(children, text("help", MODES[state.mode].help(state), "overseer.hint"))
-			local labels = {
-				name = "Display name (optional)", branch = "Branch name", base = "Base branch",
-				linear = "Workspace URL or name",
-			}
+			table.insert(children, ui.node("text", { key = "help", spans = { ui.span(MODES[state.mode].help(state), "muted") } }))
 			local placeholders = {
 				name = if state.mode == "rename" then state.project else "e.g. Fix onboarding",
 				branch = "feature/branch-name", base = "main", linear = "https://linear.app/your-team",
 			}
 			for _, name in ipairs(fieldOrder(state)) do
-				table.insert(children, text(name .. "Label", labels[name], "overseer.fieldLabel"))
 				local props = Input.props(state.fields[name])
-				props.key, props.role, props.aria = name, "overseer.field", labels[name]
-				props.placeholder = placeholders[name]
-				table.insert(children, ui.node("input", props))
+				props.key, props.placeholder = name, placeholders[name]
+				table.insert(children, ui.node("field", {
+					key = "field-" .. name, label = LABELS[name], required = REQUIRED[name] == true,
+					hint = if name == "name" then "Optional" else nil,
+					error = if state.errorField == name then state.error else nil,
+				}, { ui.node("input", props) }))
 			end
-			table.insert(children, ui.node("row", { key = "buttons", role = "overseer.formButtons" }, {
-				ui.el("button", {
-					key = "submit", role = "overseer.primaryButton",
-					text = MODES[state.mode].submit,
-					actions = { click = "submit" },
+			table.insert(children, ui.node("row", { key = "buttons", gap = "sm" }, {
+				ui.button(MODES[state.mode].submit, {
+					key = "submit", variant = "primary", keys = { "enter" }, actions = { click = "submit" },
 				}),
 			}))
-			table.insert(children, text("keys", "Enter to submit · Esc to go back · Tab to change fields", "overseer.hint"))
+			if #fieldOrder(state) > 1 then
+				table.insert(children, ui.node("text", {
+					key = "keys", spans = { ui.span("tab", "key"), ui.span(" next field", "muted") },
+				}))
+			end
 			if not state.focusScheduled then
 				state.focusScheduled = true
 				-- Timer executes after this view mounts; a closed pane safely ignores focus.
@@ -170,10 +179,13 @@ tern.block.define("form", {
 				end)
 			end
 		end
-		if state.error then
-			table.insert(children, text("error", state.error, "overseer.error"))
+		-- Errors that belong to no field (a failed send, Worktrunk's refusal) show under the form.
+		if state.error and not state.errorField then
+			table.insert(children, ui.card("Couldn't continue", {
+				ui.node("text", { key = "message", text = state.error }),
+			}, { key = "error", tone = "error", icon = "warn" }))
 		end
-		return { main = ui.node("col", { role = "overseer.form" }, children) }
+		return { main = ui.node("col", { role = "overseer.form", gap = "md" }, children) }
 	end,
 	key = function(state, key, cx)
 		if state.submitted then
@@ -196,7 +208,7 @@ tern.block.define("form", {
 		else
 			local handled, err = Input.key(state.fields[state.focus], key)
 			if not handled then return false end
-			state.error = err
+			state.error, state.errorField = err, if err then state.focus else nil
 			focus(state, cx)
 		end
 		return true
@@ -205,13 +217,14 @@ tern.block.define("form", {
 		if event.ev == "action" and event.act == "retry" then
 			state.submitted, state.cancelled = false, false
 			state.error = if type(event.value) == "string" then event.value else "Please correct the form and try again."
+			state.errorField = nil
 			state.focusScheduled = false
 			return
 		end
 		if state.submitted then return end
 		if event.ev == "focus" then
 			for _, name in ipairs(fieldOrder(state)) do
-				if event.id == "main." .. name then
+				if event.id == inputId(name) then
 					state.focus = name
 					focus(state, cx)
 					break
