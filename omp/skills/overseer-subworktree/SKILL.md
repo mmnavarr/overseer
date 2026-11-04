@@ -35,7 +35,7 @@ it's the shared base, not a task.
 **Sub-worktree**, from inside the current worktree (any subdirectory works):
 
 ```sh
-~/.omp/agent/skills/overseer-subworktree/overseer-subworktree <branch> [--base <ref>] [--brief -] <<'EOF'
+~/.omp/plugins/node_modules/overseer-omp/skills/overseer-subworktree/overseer-subworktree <branch> [--base <ref>] [--brief -] <<'EOF'
 <the brief, when you pass --brief ->
 EOF
 ```

@@ -5,7 +5,7 @@ scope: "tool:bash, tool:eval"
 ---
 You are about to create a worktree. Every worktree goes through the `overseer-subworktree` skill (skill://overseer-subworktree), so Tern's Overseer shows the right hierarchy:
 
-- In a worktree (not the primary checkout), for part of that worktree's task → create a sub-worktree with `~/.omp/agent/skills/overseer-subworktree/overseer-subworktree <branch> [--base <ref>] [--brief -]`.
+- In a worktree (not the primary checkout), for part of that worktree's task → create a sub-worktree with `~/.omp/plugins/node_modules/overseer-omp/skills/overseer-subworktree/overseer-subworktree <branch> [--base <ref>] [--brief -]`.
 - In the primary checkout, or for work unrelated to this worktree's task → a top-level `wt switch --create <branch> --no-cd`.
 - Never `git worktree add`, `omp worktree add`, or the ce-worktree / git-worktree scripts.
 

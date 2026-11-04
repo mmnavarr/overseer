@@ -5,6 +5,7 @@ local visualize = require("./visualize")
 local budget = require("./budget")
 local intercom = require("./intercom")
 local oplog = require("./oplog")
+local omplink = require("./omplink")
 
 local cache = {}
 local inflight = {}
@@ -2571,5 +2572,7 @@ tern.on("budget", function(ev, _cx)
 end)
 -- Timers are restarted on reload; window_start intentionally is not.
 budget.later("tick", 750, tick)
+-- Every load, so a fresh install or an upgrade to a new plugin dir links omp to this copy.
+budget.later("omp link", 0, function() omplink.ensure() end)
 -- 2.1's self-reload cooldown; nothing reads it any more.
 tern.kv.set("self-reload", nil)

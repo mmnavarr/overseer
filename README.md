@@ -44,15 +44,9 @@ cd overseer
 
 Linking reloads the plugin whenever the source changes; `tern plugin install "$PWD"` installs a frozen copy instead.
 
-### omp integration (optional)
+### omp integration
 
-For omp agents to create sub-worktrees and coordinate with each other, link three pieces into omp once, from the same directory:
-
-```sh
-ln -s "$PWD/skills/overseer-subworktree" ~/.omp/agent/skills/overseer-subworktree
-mkdir -p ~/.omp/agent/rules && ln -s "$PWD/omp/rules/overseer-worktrees.md" ~/.omp/agent/rules/overseer-worktrees.md
-ln -s "$PWD/omp/overseer-rails" ~/.omp/agent/extensions/overseer-rails
-```
+With [omp](https://omp.sh) installed, there's nothing to set up: each time Overseer loads, it links its omp half into omp. That half is `omp/`, an omp plugin package named `overseer-omp`:
 
 | Piece | What it does |
 |---|---|
@@ -60,7 +54,7 @@ ln -s "$PWD/omp/overseer-rails" ~/.omp/agent/extensions/overseer-rails
 | `overseer-worktrees` rule | Stops an agent that types a raw `git worktree add` or `wt switch --create` and points it at the skill |
 | `overseer-rails` extension | Keeps the agents of a worktree family informed (needs pi-intercom) |
 
-They load in omp sessions started after you link them.
+They load in omp sessions started after the link (`/new` restarts one); `omp plugin list` shows it. `omp plugin disable overseer-omp` turns them off, and Overseer leaves it that way. Overseer also removes the symlinks into `~/.omp/agent` that earlier versions had you make, so omp doesn't load them twice. Using omp without Tern? Link it yourself: `omp plugin link "$PWD/omp"`.
 
 ## Use it
 
@@ -150,7 +144,7 @@ A task's worktree can own the worktrees of its sub-tasks. When an agent splits a
   │ ○ fix/website-logging-levels
 ```
 
-- **Agents make them.** With the [omp integration](#omp-integration-optional), an agent in a task's worktree creates the worktrees of its sub-tasks as sub-worktrees, and can hand each one a brief so a fresh agent starts on it there. Work started from the primary checkout, or unrelated to the task, gets an ordinary top-level worktree.
+- **Agents make them.** With the [omp integration](#omp-integration), an agent in a task's worktree creates the worktrees of its sub-tasks as sub-worktrees, and can hand each one a brief so a fresh agent starts on it there. Work started from the primary checkout, or unrelated to the task, gets an ordinary top-level worktree.
 - **You arrange them** with **Move under…** and **Make top-level**.
 - **Each is a full worktree**, with its own session, menu, PR and ticket. Nesting is one level deep.
 - **Fold them** with the `▾ N` badge. Folded, it takes the color of the sub-worktree agent that most needs you; the worktree you're in always shows.
@@ -160,7 +154,7 @@ The hierarchy lives in Git config (Worktrunk's per-branch `overseer-parent` vari
 
 ## Coordination
 
-With the [omp integration](#omp-integration-optional) and pi-intercom, the agents of a task and its sub-worktrees stay aware of each other, whichever side is doing the work:
+With the [omp integration](#omp-integration) and pi-intercom, the agents of a task and its sub-worktrees stay aware of each other, whichever side is doing the work:
 
 - **Before each prompt**, an agent hears what changed in its family since it last looked: new commits, files both branches touch, and what the others are working on or just finished.
 - **Overseer wakes the task's agent** when a sub-worktree's agent is waiting for an answer, its turn failed, or it finished with a pull request open. A sub-worktree built on its parent's branch hears when that branch moves, so it can rebase.
@@ -215,7 +209,7 @@ flowchart LR
 - **A new worktree seems stuck.** Its row says what setup is doing. **needs you?** means setup is asking a question, often a Worktrunk hook approval, or has printed nothing for a minute. Click the row to open its setup tab.
 - **What did Overseer just do?** **Show Overseer's operation log** in the command palette lists every creation, deletion, brief and coordination message, with when it happened, how long it took and how it ended. The same entries are in Tern's log (`~/Library/Logs/Tern/tern.log`; search for `Overseer:`).
 - **The panel froze for a few seconds.** Tern pauses a plugin hook that runs too long. Overseer logs `Tern paused its … hook` and catches up when it resumes.
-- **Agents aren't coordinating.** Check that pi-intercom is installed for omp and that the agents' sessions started after you linked the extension (`/new` restarts one). With several omp sessions in a worktree, pick one with **Make overseer session**.
+- **Agents aren't coordinating.** Check that pi-intercom is installed for omp, that `omp plugin list` shows `overseer-omp`, and that the agents' sessions started after Overseer linked it (`/new` restarts one). With several omp sessions in a worktree, pick one with **Make overseer session**.
 
 ---
 
@@ -230,7 +224,7 @@ Overseer is a Tern plugin written in Luau. `plugin.toml` declares two entry poin
 - `host.luau` runs in Tern's host and renders the `overseer.form` block, the native form used for New worktree, Rename, Change base branch and Set Linear workspace. `input.luau` is its Unicode-aware text editing.
 - `window.luau` runs once per Tern window. It owns the Projects panel (a canvas that follows you between tabs), event hooks, the background job tracker, coordination relays, the operation log, the Carly export, and Visualize PR canvases.
 
-Two pieces run inside omp, not Tern, and share only Git config and pi-intercom with the plugin: `omp/overseer-rails/index.ts` (a TypeScript omp extension, run by Bun) and `omp/rules/overseer-worktrees.md` (an omp TTSR rule). The `overseer-subworktree` skill's script is plain Bash.
+Three pieces run inside omp, not Tern, and share only Git config and pi-intercom with the plugin. They make up `omp/`, the omp plugin package `overseer-omp`: `omp/overseer-rails/index.ts` (a TypeScript omp extension, run by Bun, declared in `omp/package.json`), `omp/rules/overseer-worktrees.md` (an omp TTSR rule) and `omp/skills/overseer-subworktree/` (a skill whose script is plain Bash). `omplink.luau` links the package into omp on every load (`omp plugin link`), so agents reach the script at the stable `~/.omp/plugins/node_modules/overseer-omp/skills/overseer-subworktree/overseer-subworktree` wherever Tern installed the plugin. It re-links only when the link leads elsewhere, keeps a disabled package disabled, and then removes the old hand-made `~/.omp/agent` symlinks, only those pointing into an Overseer checkout.
 
 Tern APIs are typed in the definitions Tern generates: `/Applications/Tern.app/Contents/MacOS/tern plugin types <dir>` writes `tern.d.luau`. Read it before using an API you haven't used here.
 
@@ -263,9 +257,11 @@ When debugging an overrun, read the log: `exceeded its budget; paused … hook="
 | `host.luau`, `input.luau` | The native form block and its text input. |
 | `styles.css`, `icons.css` | Panel layout and status marks only: Tern's kinds draw buttons, badges, cards and menus themselves. The canvas has no `font` prop, so `styles.css` sets the panel in the UI face (`--sans`) and branches and paths back in `--mono`. `icons.css` is **generated** by `icons/generate-css.py` (plugin stylesheets can't load files, so icons are embedded as data URIs). |
 | `skills/visual-pr/` | HumanLayer's visual-pr skill, vendored unchanged (MIT). |
-| `skills/overseer-subworktree/` | The omp skill and script for creating worktrees: sub-worktrees of the worktree the script runs in (optionally with a brief for their own session), top-level ones otherwise. |
+| `omp/package.json` | Makes `omp/` the omp plugin package `overseer-omp`; declares the extension. Keep its `version` in step with `plugin.toml`. |
+| `omp/skills/overseer-subworktree/` | The omp skill and script for creating worktrees: sub-worktrees of the worktree the script runs in (optionally with a brief for their own session), top-level ones otherwise. |
 | `omp/rules/overseer-worktrees.md` | The omp TTSR rule that redirects raw worktree-creating commands to that skill. |
 | `omp/overseer-rails/index.ts` | The omp extension behind [coordination](#coordination): family summary before each prompt, notes on pi-intercom's shared board, the `overseer_family` tool. |
+| `omplink.luau` | Links `omp/` into omp each time the plugin loads, and removes the old hand-made symlinks; logs to the operation log. |
 | `intercom.luau` | Overseer's sender: resolves a pane to its omp session with `tern inspect`, then runs pi-intercom's CLI as `overseer`. |
 | `oplog.luau` | The operation log (`ops.log`), reading an operation's terminal, and spotting a creation's step, questions and warnings in it. |
 | `tests/test_worktree_operation.py`, `tests/test_subworktree.py` | Real Git/Worktrunk tests for the helper and the sub-worktree script. |
@@ -339,7 +335,7 @@ Run the helper's tests (they use temporary repos, config and approvals):
 ```sh
 python3 -B tests/test_worktree_operation.py -v
 python3 -B tests/test_subworktree.py -v
-bash -n worktree-operation.sh skills/overseer-subworktree/overseer-subworktree
+bash -n worktree-operation.sh omp/skills/overseer-subworktree/overseer-subworktree
 ```
 
 Check the worktree rule fires on the commands it should, and only those:

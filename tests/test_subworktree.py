@@ -7,7 +7,7 @@ import tempfile
 import unittest
 
 
-SCRIPT = Path(__file__).resolve().parents[1] / "skills" / "overseer-subworktree" / "overseer-subworktree"
+SCRIPT = Path(__file__).resolve().parents[1] / "omp" / "skills" / "overseer-subworktree" / "overseer-subworktree"
 WT = shutil.which("wt")
 
 
