@@ -42,7 +42,9 @@
   white-space: nowrap;
 }
 
-/* A worktree and its tabs form one group, highlighted together when active. */
+/* A worktree and its tabs form one group, highlighted together when active.
+   The mark is our own `active`, not Tern's `pick`, whose accent bar at the
+   node's left would stand in a sub-worktree's tree lines. */
 [data-role='overseer.worktree'] {
   gap: 0;
   padding: 2px 4px;
@@ -51,7 +53,7 @@
 [data-role='overseer.worktree']:hover {
   background: var(--l1);
 }
-[data-role='overseer.worktree'][data-mark='pick'] {
+[data-role='overseer.worktree'][data-mark='active'] {
   background: rgb(from var(--accent) r g b / 9%);
   box-shadow: inset 0 0 0 1px rgb(from var(--accent) r g b / 28%);
 }
@@ -96,12 +98,56 @@
   color: var(--t1);
   background: var(--l1);
 }
-/* Sub-worktrees hang under their parent, indented past a hairline. */
+/* Sub-worktrees hang under their parent like a file tree: a line drops from
+   the parent's dot (x 18px, y 15px in its group) past its tabs, and a short
+   elbow turns into each child, stopping 4px short of its dot, which lines up
+   with the start of the parent's name. The last child's elbow
+   ends the line. The colour is opaque: a translucent hairline picks up the
+   glass behind the panel. */
+[data-role='overseer.lineage'] {
+  --overseer-tree: color-mix(in srgb, var(--t3), var(--t4));
+  gap: 0;
+}
+[data-role='overseer.lineage'] > [data-role='overseer.worktree'] {
+  position: relative;
+}
+[data-role='overseer.lineage'] > [data-role='overseer.worktree']::after {
+  content: '';
+  position: absolute;
+  left: 17.5px;
+  top: 24px;
+  bottom: 0;
+  border-left: 1px solid var(--overseer-tree);
+}
 [data-role='overseer.children'] {
   gap: 0;
-  margin: -2px 0 2px 18px;
-  padding-left: 4px;
-  box-shadow: inset 1px 0 0 var(--l2);
+  margin: 0 0 2px 18px;
+  padding-left: 2px;
+}
+[data-role='overseer.children'] > [data-role='overseer.worktree'] {
+  position: relative;
+}
+/* A child's dot sits 12px in and centres 13px down its group (its rows are
+   2px tighter than a top-level one's). The elbow starts on the trunk, 2.5px
+   left of the group. */
+[data-role='overseer.children'] > [data-role='overseer.worktree']::before {
+  content: '';
+  position: absolute;
+  left: -2.5px;
+  top: 0;
+  width: 9.5px;
+  height: 12.5px;
+  border-left: 1px solid var(--overseer-tree);
+  border-bottom: 1px solid var(--overseer-tree);
+  border-bottom-left-radius: 6px;
+}
+[data-role='overseer.children'] > [data-role='overseer.worktree']:not(:last-child)::after {
+  content: '';
+  position: absolute;
+  left: -2.5px;
+  top: 0;
+  bottom: 0;
+  border-left: 1px solid var(--overseer-tree);
 }
 [data-role='overseer.children'] [data-role='overseer.worktreeRow'] {
   padding-top: 2px;

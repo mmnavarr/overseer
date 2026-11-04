@@ -4,6 +4,7 @@ local view = require("./view")
 local visualize = require("./visualize")
 local budget = require("./budget")
 local intercom = require("./intercom")
+local oplog = require("./oplog")
 
 local cache = {}
 local inflight = {}
@@ -106,6 +107,10 @@ end
 -- Deletions being checked before they start or before their changes are
 -- shown: path -> request. In memory only; a reload just drops the check.
 local removalChecks = {}
+
+-- Creations' progress, read from their setup tab (see trackCreations): job
+-- id -> { step, asking, needsYou, quiet, changedAt, ... }. In memory only.
+local progress = {}
 
 -- Agent CLIs recognised in terminals, by program name.
 local AGENTS = {
@@ -361,6 +366,19 @@ local function model(cx)
 	local agents = worktreeAgents(cx)
 	local rails = railsState()
 	local seen = false
+	-- Creations in progress, by project and branch.
+	local creating = {}
+	for id, job in jobs do
+		if job.kind == "create" and job.branch and job.project then
+			local state = progress[id] or {}
+			creating[job.project] = creating[job.project] or {}
+			creating[job.project][job.branch] = {
+				pane = job.pane, label = job.displayName or job.branch, step = state.step,
+				elapsed = math.max(0, os.time() - (job.started or os.time())),
+				needsYou = state.needsYou == true, asking = state.asking == true, quiet = state.quiet,
+			}
+		end
+	end
 	local result = {
 		projects = {}, collapsed = collapsed, confirmation = confirmation,
 		showIcebox = showIcebox, refreshing = spinning,
@@ -391,6 +409,10 @@ local function model(cx)
 			item.iced = not worktree.is_main and icebox[project.id] ~= nil and icebox[project.id][worktree.path] == true
 			item.lead = leadOf(entry, worktree, agents)
 			item.agentCount = #(agents[worktree.path] or {})
+			-- Worktrunk lists a new worktree as soon as its directory exists, while
+			-- its setup may still be running.
+			item.creating = worktree.branch and creating[project.id] and creating[project.id][worktree.branch] or nil
+			if item.creating then item.creating.listed = true end
 			-- Looking at a worktree's session is reading what Overseer told it.
 			if item.active and rails.unread[worktree.path] then
 				rails.unread[worktree.path], seen = nil, true
@@ -412,12 +434,13 @@ local function model(cx)
 				item.checkin = if type(checkin) == "number" and checkin > 1e9 then ago(checkin) else nil
 			end
 		end
-		-- The overseer session's tab is marked once there's a reason to tell
-		-- sessions apart: several agents, or a family Overseer relays for.
+		-- The overseer badge marks where Overseer's messages for a family land:
+		-- the parent's session. A sub-worktree's session still gets its parent's
+		-- moves and your briefs, but needs no badge; with several sessions, the
+		-- one without "Make overseer session" in its menu is it.
 		for _, item in items do
-			local family = item.parentLink ~= nil or item.family ~= nil
 			for _, tab in item.tabs do
-				tab.lead = item.lead ~= nil and tab.agentPane == item.lead and (family or item.agentCount > 1)
+				tab.lead = item.lead ~= nil and tab.agentPane == item.lead and item.family ~= nil
 				tab.canLead = tab.agentPane ~= nil and tab.agentPane ~= item.lead and item.agentCount > 1
 			end
 		end
@@ -456,6 +479,20 @@ local function model(cx)
 		end
 		-- Ice Box worktrees sink to the bottom, keeping their relative order.
 		for _, item in iced do table.insert(row.worktrees, item) end
+		-- A creation Worktrunk hasn't listed yet gets its row right away, after
+		-- the primary checkout.
+		local pendingRows = {}
+		for branch, state in (creating[project.id] or {}) do
+			if not state.listed then
+				table.insert(pendingRows, {
+					path = "creating:" .. branch, branch = branch, creating = state, tabs = {},
+					displayName = if state.label ~= branch then state.label else nil,
+				})
+			end
+		end
+		table.sort(pendingRows, function(a, b) return a.branch < b.branch end)
+		local at = if row.worktrees[1] and row.worktrees[1].is_main then 2 else 1
+		for index, pending in pendingRows do table.insert(row.worktrees, at + index - 1, pending) end
 		-- Sessions of worktrees removed outside Overseer stay flagged until closed.
 		local gonePaths = {}
 		for path in (entry and entry.gone or {}) do table.insert(gonePaths, path) end
@@ -626,6 +663,7 @@ local function reconcileGone(cx, project, entry)
 	local function gone(path)
 		return not listed[path] and not removing(path, jobs) and not tern.fs.exists(path)
 	end
+	local before = entry.gone or {}
 	entry.gone = {}
 	local sessions = sessionsById(cx)
 	local bindings, unbound = records("sessions"), false
@@ -633,9 +671,15 @@ local function reconcileGone(cx, project, entry)
 		if binding.project == project.id and gone(path) then
 			if boundSession(path, sessions, bindings) then
 				entry.gone[path] = true
+				if not before[path] then
+					oplog.write("info", { op = "worktree", event = "gone", project = project.name, path = path,
+						detail = "removed outside Overseer; its session is still open" })
+				end
 			else
 				bindings[path] = nil
 				unbound = true
+				oplog.write("info", { op = "worktree", event = "gone", project = project.name, path = path,
+					detail = "removed outside Overseer; dropped its session record" })
 			end
 		end
 	end
@@ -1016,8 +1060,11 @@ local function flushRails(cx)
 				local after = railsState()
 				if ok then
 					after.unread[path] = (after.unread[path] or 0) + 1
+					oplog.write("info", { op = "relay", event = "delivered", path = path,
+						detail = tostring(#texts) .. " message" .. (if #texts == 1 then "" else "s") })
 				else
-					tern.log.warn("Overseer: couldn't message the overseer session of " .. path .. ": " .. tostring(err))
+					oplog.write("warn", { op = "relay", event = "failed", path = path,
+						detail = tostring(err) .. (if attempts + 1 < RAILS_ATTEMPTS then "; will retry" else "; gave up") })
 					if attempts + 1 < RAILS_ATTEMPTS then
 						local back = after.queue[path] or {}
 						for index, item in queue do
@@ -1227,6 +1274,8 @@ local function startBrief(cx, project, worktree, file)
 			tern.fs.write(file, brief)
 			tern.fs.remove(started)
 			if nextCx then report(nextCx, tostring(result.stderr or "tern new failed"), "Brief not started") end
+			oplog.write("warn", { op = "brief", event = "failed", project = project.name, branch = worktree.branch,
+				detail = tostring(result.stderr or "tern new failed") })
 			return
 		end
 		if not session and value.session and nextCx then
@@ -1238,6 +1287,7 @@ local function startBrief(cx, project, worktree, file)
 			bindings[worktree.path] = { id = value.session, host = host, project = project.id }
 			tern.kv.set("sessions", bindings)
 		end
+		oplog.write("info", { op = "brief", event = "started", project = project.name, branch = worktree.branch })
 		if nextCx then
 			nextCx:toast("info", "Sub-worktree started", treeLabel(project, worktree) .. " is working on its brief.")
 			redraw(nextCx)
@@ -1521,6 +1571,8 @@ local function beginRemoval(cx, request)
 			session = target,
 		}
 		tern.kv.set("jobs", jobs)
+		oplog.write("info", { op = "remove", event = "started", project = project.name, branch = worktree.branch,
+			path = worktree.path, detail = if force then "forced" else nil })
 		removalChecks[request.path] = nil
 		if confirmation == request then confirmation = nil end
 		nextCx:toast("info", "Deleting worktree", notificationLabel(request.label))
@@ -1872,6 +1924,7 @@ local function launchCreation(cx, project, job)
 	local jobs = records("jobs")
 	jobs[id] = job
 	tern.kv.set("jobs", jobs)
+	oplog.write("info", { op = "create", event = "started", project = project.name, branch = job.branch })
 	return nil
 end
 
@@ -2106,15 +2159,28 @@ local function helperFailed(id, job)
 	return false
 end
 
--- What a finished job leaves to do: close its output tab, update names and
--- sessions, and tell you. Runs in a callback of its own once the job is off
--- the books, so a callback Tern cuts short never repeats or misreports a job.
+-- What a finished job leaves to do: close its tab, update names and sessions,
+-- log it, and tell you. Runs in a callback of its own once the job is off the
+-- books, so a callback Tern cuts short never repeats or misreports a job.
 local function jobFinished(cx, job, status)
+	local seconds = math.max(0, os.time() - (job.started or os.time()))
+	-- Before the tab closes: a setup that printed warnings goes in the
+	-- operation log, with its first warning, and nowhere else.
+	local warnings = {}
+	if cx.session:pane(job.pane) then
+		warnings = oplog.warnings(oplog.readPane(cx, job.pane, oplog.READ_LINES, true) or {})
+	end
 	-- On success the output tab has served its purpose: close it (its helper is
 	-- only waiting for Enter). Failures keep it open with the error on screen,
 	-- including a deletion that reported success but left its directory.
 	local succeeded = status == 0 and (job.kind ~= "remove" or not tern.fs.exists(job.path))
 	if succeeded and cx.session:pane(job.pane) then cx.layout:close(job.pane) end
+	local project = projectById(job.project)
+	oplog.write(if succeeded and #warnings == 0 then "info" else "warn", {
+		op = if job.kind == "remove" then "remove" else "create", event = if succeeded then "finished" else "failed",
+		project = project and project.name, branch = job.branch, path = job.path, status = status, seconds = seconds,
+		warnings = if #warnings > 0 then #warnings else nil, detail = warnings[1],
+	})
 	if job.kind == "remove" then
 		if succeeded then
 			local names = records("worktree-names")
@@ -2141,9 +2207,8 @@ local function jobFinished(cx, job, status)
 	else
 		-- Applied on failure too: a partially created worktree keeps its label.
 		applyCreatedName(job)
-		local label = job.displayName or job.branch
 		if status == 0 then
-			cx:toast("info", "Worktree created", notificationLabel(label))
+			cx:toast("info", "Worktree created", notificationLabel(job.displayName or job.branch))
 			startTicketAgent(job)
 		else
 			cx:toast("error", "Worktree creation failed", "Check the Create tab for details.")
@@ -2179,6 +2244,62 @@ local function checkJobs(cx)
 	refresh(cx)
 end
 
+-- Creations' progress, read from their setup tab each tick: the step they're
+-- on, and how long their output has been still. A question on the last line
+-- (Worktrunk's hook approval prompt) marks one "needs you?" at once; so does
+-- CREATE_QUIET_S without output, long enough that a quiet install or code
+-- generation step doesn't trip it. Either tells you once. After a reload it
+-- just starts over.
+local CREATE_QUIET_S = 60
+
+local function trackCreations(cx)
+	local jobs = records("jobs")
+	local changed = false
+	for id, job in jobs do
+		if job.kind == "create" and job.pane then
+			local state = progress[id] or { changedAt = os.time() }
+			progress[id] = state
+			local lines = oplog.readPane(cx, job.pane, 15, false)
+			if lines then
+				local signature = table.concat(lines, "\n")
+				if signature ~= state.signature then state.signature, state.changedAt = signature, os.time() end
+				local step, asking = oplog.progress(lines)
+				local quiet = os.time() - state.changedAt
+				local needsYou = asking or quiet >= CREATE_QUIET_S
+				-- The row shows elapsed time in 5 s steps: redraw when that, the step
+				-- or the flag changes, not on every tick.
+				local bucket = (os.time() - (job.started or os.time())) // 5
+				if step ~= state.step or needsYou ~= state.needsYou or bucket ~= state.bucket then changed = true end
+				state.step, state.asking, state.needsYou, state.bucket = step, asking, needsYou, bucket
+				state.quiet = if needsYou and not asking then quiet else nil
+				if needsYou and not state.told then
+					state.told = true
+					local project = projectById(job.project)
+					local why = if asking then "It's asking a question in its setup tab."
+						else "No output for " .. quiet .. " s. It may be waiting for an answer."
+					cx:toast("error", "Creating " .. (job.displayName or job.branch) .. " may need you", why .. " Click its row.")
+					oplog.write("warn", { op = "create", event = "needs-you", project = project and project.name,
+						branch = job.branch, detail = why })
+				end
+			end
+		end
+	end
+	for id in progress do
+		if not jobs[id] then progress[id], changed = nil, true end
+	end
+	if changed then redraw(cx) end
+end
+
+-- Opens a saved log in a new tab with less. The command goes through your
+-- shell, and single quotes keep the path one word in bash, zsh, fish and nu.
+local function openLog(cx, file, name)
+	if not tern.fs.exists(file) then report(cx, "That log is no longer saved."); return end
+	if string.find(file, "'", 1, true) then report(cx, "Can't open " .. file .. " through a shell."); return end
+	local pane = cx.layout:new_tab({ command = "less -R +G '" .. file .. "'" })
+	local tab = pane and cx.session:tab_of(pane)
+	if tab then cx.layout:name_tab(tab, name) end
+end
+
 -- Commands, like clicks, only queue their work.
 local function command(id, title, icon, keys, run)
 	tern.command({ id = id, title = title, icon = icon, keys = keys, run = function(_cx)
@@ -2190,6 +2311,9 @@ command("add", "Add project", "folder", nil, pickProject)
 command("create", "Create worktree", "branch", nil, function(cx)
 	local project = activeWorktree(cx)
 	if project then openForm(cx, "create", project) else navigator(cx); cx:toast("info", "Choose a project", "Click + beside a project's name.") end
+end)
+command("ops-log", "Show Overseer's operation log", "list", nil, function(cx)
+	openLog(cx, oplog.path(), "Overseer log")
 end)
 
 local TICKET_PROMPT = "Please read ticket %s to understand your task and ask any questions you have before we start"
@@ -2390,6 +2514,7 @@ local function tick(cx)
 	-- Resumes fast form checks after a plugin reload left a form open.
 	watchForms()
 	separately("job check", checkJobs)
+	separately("creation progress", trackCreations)
 	-- A hidden panel still refreshes, more slowly: the rails relay from what it knows.
 	local interval = if #cx.canvas:list() > 0 then 15000 else 60000
 	if tern.now() - lastRefresh >= interval then

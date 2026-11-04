@@ -190,6 +190,8 @@ local function statusMark(worktree)
 		return ui.el("div", { key = "status", role = "overseer.dotBusy", title = "Deleting" })
 	elseif worktree.checking then
 		return ui.el("div", { key = "status", role = "overseer.dotBusy", title = "Checking before deletion" })
+	elseif worktree.creating then
+		return ui.el("div", { key = "status", role = "overseer.dotBusy", title = "Creating" })
 	elseif AGENT_STATUS[worktree.agent] then
 		local agent = AGENT_STATUS[worktree.agent]
 		return if agent.glyph
@@ -272,13 +274,47 @@ local function goneNode(worktree, activePath)
 	appendTabs(children, worktree.tabs)
 	return ui.node("col", {
 		key = "w" .. safeKey(worktree.path), role = "overseer.worktree",
-		mark = if activePath == worktree.path then "pick" else nil,
+		mark = if activePath == worktree.path then "active" else nil,
 	}, children)
+end
+
+local function elapsed(seconds)
+	if seconds < 60 then return tostring(seconds) .. "s" end
+	return string.format("%dm %02ds", seconds // 60, seconds % 60)
+end
+
+-- A creation's subtitle: how long it has run (in 5 s steps, so the row
+-- redraws only that often), then what it's doing or why it may need you.
+local function creatingSubtitle(state)
+	local parts = { "creating", elapsed(state.elapsed // 5 * 5) }
+	if state.asking then
+		table.insert(parts, "asking a question in its setup tab")
+	elseif state.quiet then
+		table.insert(parts, "no output for " .. elapsed(state.quiet // 5 * 5))
+	elseif state.step then
+		table.insert(parts, state.step)
+	end
+	return table.concat(parts, " · ")
+end
+
+local function creatingTitle(state)
+	local lines = { "Creating " .. state.label, "Running for " .. elapsed(state.elapsed) }
+	if state.step then table.insert(lines, "Last: " .. state.step) end
+	if state.asking then
+		table.insert(lines, "")
+		table.insert(lines, "It's asking a question in its setup tab, such as a hook approval.")
+	elseif state.needsYou then
+		table.insert(lines, "")
+		table.insert(lines, "No output for a while: it may be waiting for an answer, such as a hook approval.")
+	end
+	table.insert(lines, "")
+	table.insert(lines, "Click to open its setup tab.")
+	return table.concat(lines, "\n")
 end
 
 -- The worktree's right-click menu: what it is, how it's kept, then what ends it.
 local function worktreeMenu(worktree)
-	if worktree.deleting or worktree.checking then return {} end
+	if worktree.deleting or worktree.checking or worktree.creating then return {} end
 	local menu = {}
 	if worktree.pr then table.insert(menu, { id = "visualize", label = "Visualize PR", icon = "merge" }) end
 	table.insert(menu, { id = "rename", label = "Rename…", icon = "pen" })
@@ -341,7 +377,11 @@ local function worktreeNode(worktree, activePath)
 	if worktree.conflicts then
 		table.insert(head, badge("conflicts", "conflicts", "error", "Merge conflicts"))
 	end
-	if worktree.deleting then
+	if worktree.creating then
+		local state = worktree.creating
+		table.insert(head, badge("creating", if state.needsYou then "needs you?" else "creating",
+			if state.needsYou then "error" else "warning", creatingTitle(state)))
+	elseif worktree.deleting then
 		table.insert(head, badge("deleting", "deleting", "warning"))
 	elseif worktree.checking then
 		table.insert(head, badge("checking", "checking", "warning"))
@@ -370,20 +410,26 @@ local function worktreeNode(worktree, activePath)
 	end
 	-- A renamed row keeps its branch visible; otherwise the directory helps
 	-- tell apart worktrees whose branch names share a long ticket prefix.
-	local subtitle = if worktree.displayName then branch
+	local subtitle = if worktree.creating then creatingSubtitle(worktree.creating)
+		elseif worktree.displayName then branch
 		elseif worktree.is_main then "primary checkout · " .. basename(worktree.path)
 		else basename(worktree.path)
 	-- A sub-worktree also says when its session last finished a turn.
-	if worktree.checkin then subtitle ..= " · checked in " .. worktree.checkin end
+	if worktree.checkin and not worktree.creating then subtitle ..= " · checked in " .. worktree.checkin end
 	local summary = ui.node("col", {
-		key = "row", role = "overseer.worktreeRow", title = details(worktree, branch),
-		aria = label .. (if AGENT_STATUS[worktree.agent] then ", " .. string.lower(AGENT_STATUS[worktree.agent].title)
+		key = "row", role = "overseer.worktreeRow",
+		title = if worktree.creating then creatingTitle(worktree.creating) else details(worktree, branch),
+		aria = label .. (if worktree.creating then ", creating"
+				elseif AGENT_STATUS[worktree.agent] then ", " .. string.lower(AGENT_STATUS[worktree.agent].title)
 				elseif worktree.session then ", session open"
 				else ", open session")
 			.. (if worktree.conflicts then ", merge conflicts" elseif worktree.dirty then ", uncommitted changes" else "")
 			.. (if worktree.iced then ", in the Ice Box" else ""),
 		actions = {
-			click = if worktree.deleting then nil else "open-worktree=" .. worktree.path,
+			-- While setup runs, the row leads to the setup tab, not into the worktree.
+			click = if worktree.deleting then nil
+				elseif worktree.creating then "tab=" .. tostring(worktree.creating.pane)
+				else "open-worktree=" .. worktree.path,
 			menu = worktreeMenu(worktree),
 		},
 	}, {
@@ -394,7 +440,7 @@ local function worktreeNode(worktree, activePath)
 	appendTabs(children, worktree.tabs)
 	return ui.node("col", {
 		key = "w" .. safeKey(worktree.path), role = "overseer.worktree",
-		mark = if active then "pick" else nil,
+		mark = if active then "active" else nil,
 	}, children)
 end
 
@@ -475,15 +521,21 @@ local function projectNode(model, project)
 			if worktree.gone then
 				table.insert(children, goneNode(worktree, model.activePath))
 			else
-				table.insert(children, worktreeNode(worktree, model.activePath))
+				local node = worktreeNode(worktree, model.activePath)
 				-- Sub-worktrees hang under their parent's group, not inside it, so
-				-- the parent's highlight and hover stay its own.
+				-- the parent's highlight and hover stay its own. The two sit in one
+				-- lineage so the tree lines can run from the parent's dot to each child.
 				if worktree.children and not worktree.folded then
 					local nested = {}
 					for _, child in ipairs(worktree.children) do
 						table.insert(nested, worktreeNode(child, model.activePath))
 					end
-					table.insert(children, ui.node("col", { key = "c" .. safeKey(worktree.path), role = "overseer.children" }, nested))
+					table.insert(children, ui.node("col", { key = "t" .. safeKey(worktree.path), role = "overseer.lineage" }, {
+						node,
+						ui.node("col", { key = "c", role = "overseer.children" }, nested),
+					}))
+				else
+					table.insert(children, node)
 				end
 			end
 		end
