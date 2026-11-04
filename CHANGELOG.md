@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Remove project.** Right-click a project's header to take it off the panel. Its files, worktrees, branches and running sessions stay; adding the repository again brings its sessions back. Before, a project added by mistake could only be removed by editing Overseer's stored data.
+
 ## 2.0.0 (2026-10-09)
 
 The Projects panel is now one panel per window that follows you, instead of one panel per worktree session.

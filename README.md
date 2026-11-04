@@ -82,7 +82,7 @@ Linking reloads the plugin whenever the source changes. Use `tern plugin install
 - **Add to Ice Box** parks a worktree at the bottom; 🧊 in the header hides or shows parked ones
 - **Close session** stops its programs and closes its tabs (the files stay)
 - **Delete worktree** runs `wt remove`. It refuses if there are uncommitted changes and always keeps the branch.
-- On a project: **Change base branch** and **Set Linear workspace**
+- On a project: **Change base branch**, **Set Linear workspace** and **Remove project** (unregisters it from the panel; files, worktrees, branches and sessions stay)
 
 ### Start work from a ticket
 

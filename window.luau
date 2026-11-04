@@ -1080,6 +1080,30 @@ local function changeLinear(cx, pane, request, response)
 	redraw(cx)
 end
 
+-- Unregisters a project from the panel. Files, worktrees, branches and running
+-- sessions are untouched; adding the repository again restores its bindings.
+local function removeProject(cx, id)
+	local project = projectById(id)
+	if not project then report(cx, "Project not found. Refresh Projects."); return end
+	for _, job in records("jobs") do
+		if job.project == project.id then
+			report(cx, "Wait for its running worktree operation to finish.", "Project busy"); return
+		end
+	end
+	local kept = {}
+	for _, existing in projects() do
+		if existing.id ~= project.id then table.insert(kept, existing) end
+	end
+	tern.kv.set("projects", kept)
+	for _, key in { "worktree-names", "icebox" } do
+		local all = records(key)
+		if all[project.id] then all[project.id] = nil; tern.kv.set(key, all) end
+	end
+	cache[project.id], collapsed[project.id] = nil, nil
+	cx:toast("info", "Project removed", notificationLabel(project.name))
+	redraw(cx)
+end
+
 -- The worktree's path is only known once Worktrunk has created it, so the
 -- display name chosen at creation is attached afterwards, by branch.
 local function applyCreatedName(job)
@@ -1362,6 +1386,8 @@ tern.on("canvas_action", function(ev, cx)
 		local project = projectById(view.projectId(ev.node))
 		if project then openForm(cx, if ev.act == "Change base branch" then "base" else "linear", project)
 		else report(cx, "Project not found. Refresh Projects.") end
+	elseif ev.act == "Remove project" then
+		removeProject(cx, view.projectId(ev.node))
 	elseif ev.act == "Visualize PR" then
 		visualizePr(cx, view.worktreePath(ev.node))
 	elseif ev.act == "Rename" then

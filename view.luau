@@ -281,7 +281,7 @@ function View.render(model)
 		local projectChildren = {
 			ui.node("row", {
 				key = "header", role = "overseer.projectHeader",
-				actions = { menu = { "Change base branch", "Set Linear workspace" } },
+				actions = { menu = { "Change base branch", "Set Linear workspace", "Remove project" } },
 			}, {
 				button("collapse", (if collapsed then "▸  " else "▾  ") .. project.name,
 					"collapse=" .. project.id, (if collapsed then "Expand " else "Collapse ") .. project.name .. "\n" .. project.path,
