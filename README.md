@@ -16,38 +16,12 @@ Click a row and you're in that branch's own workspace.
 Running five agents on five branches means five checkouts, a pile of terminals, and losing track of which agent is stuck waiting for you. Overseer is a [Tern](https://docs.stencil.so/tern/) plugin that fixes that:
 
 - **Every worktree gets its own Tern session.** Its tabs, shells and agents live there. Switching branches is one click, and nothing bleeds between them.
-- **You can see what every agent is doing.** A pulsing dot means an agent is working; a yellow **?** means one is waiting for you; a green **✔** means one finished while you were elsewhere.
-- **PRs and tickets sit on the row.** GitHub PR state (draft, open, merged, closed) and the Linear ticket, both one click away, each in a tab of its own.
-- **Worktrees come and go safely.** Creation and deletion run through [Worktrunk](https://worktrunk.dev) in the background, with your hooks and approvals intact.
+- **You can see what every agent is doing.** A pulsing dot means an agent is working, a yellow **?** that one is waiting for you, a green **✔** that one finished while you were elsewhere.
+- **PRs and tickets sit on the row.** GitHub PR state and the Linear ticket, each one click away.
+- **Big tasks stay organized.** When an agent splits a task into one branch per fix, those [sub-worktrees](#sub-worktrees) nest under the task's row, and their agents [keep each other informed](#coordination).
+- **Worktrees come and go quietly.** Creation and deletion run through [Worktrunk](https://worktrunk.dev) in the background, with your hooks and approvals intact. A row speaks up only when setup needs you.
 - **Agents can start work for you.** Tell Tern's assistant *"Create an overseer worktree for ENG-123"* and you get a branch, a session and an [omp](https://omp.sh) agent already reading the ticket.
 - **PRs can be understood at a glance.** **Visualize PR** turns a pull request into a diagram-first outline, without touching GitHub.
-
-## The panel
-
-The panel stays with you: it sits on the left of whichever tab you're looking at, across every session, and keeps the width you give it. Each project is a local Git repository. Under it, every worktree is a row, and under each row are its open tabs. Click a tab to jump straight to it; a green **done** or red **failed** badge marks an agent turn that ended while you were elsewhere. Tab names drop what the row already shows: a GitHub pull request page reads `#123 <title>` without its author and repository, and omp's ` · #123` suffix is left off (hover a tab for its full name). Hover a row for its branch, path, line counts, ahead/behind and PR.
-
-<table>
-<tr>
-<td width="50%"><img src="docs/images/panel.png" alt="The Projects panel"></td>
-<td width="50%">
-
-| You see | It means |
-|---|---|
-| ● green | A session is open |
-| ● green, pulsing | An agent is working |
-| **?** yellow | An agent is waiting for your answer |
-| **✔** green | An agent finished while you were looking elsewhere (clears when you open its tab) |
-| **!** red | An agent's turn failed while you were looking elsewhere |
-| ○ hollow | No session yet; click to open one |
-| **✱** amber | Uncommitted changes |
-| **conflicts** | A merge or rebase is stuck |
-| Linear logo | The branch names a ticket (`feat/ENG-123-…`) |
-| PR icon | Draft, open, merged or closed PR |
-| 🧊 | Parked in the Ice Box |
-
-</td>
-</tr>
-</table>
 
 ## Install
 
@@ -59,7 +33,7 @@ You need macOS and:
 | [Worktrunk](https://worktrunk.dev) (`wt`), Git, Bash | everything | tested with wt 0.40.0 |
 | [GitHub CLI](https://cli.github.com) (`gh`), signed in | PR badges, Visualize PR | optional |
 | [Linear CLI](https://github.com/schpet/linear-cli) (`linear`), signed in | ticket links | optional |
-| [omp](https://omp.sh) | ticket agents, Visualize PR, [coordination](#coordination) | optional |
+| [omp](https://omp.sh) | ticket agents, Visualize PR, [sub-worktrees](#sub-worktrees) made by agents | optional |
 | [pi-intercom](https://github.com/nicobailon/pi-intercom) omp plugin, [Bun](https://bun.sh) | [coordination](#coordination) | optional |
 
 ```sh
@@ -68,33 +42,89 @@ cd overseer
 /Applications/Tern.app/Contents/MacOS/tern plugin link "$PWD"
 ```
 
-Linking reloads the plugin whenever the source changes. Use `tern plugin install "$PWD"` instead if you'd rather have a frozen copy.
+Linking reloads the plugin whenever the source changes; `tern plugin install "$PWD"` installs a frozen copy instead.
 
-For omp agents to create [sub-worktrees](#sub-worktrees) and [coordinate](#coordination) with them, link the skill and the extension once:
+### omp integration (optional)
+
+For omp agents to create sub-worktrees and coordinate with each other, link three pieces into omp once, from the same directory:
 
 ```sh
 ln -s "$PWD/skills/overseer-subworktree" ~/.omp/agent/skills/overseer-subworktree
+mkdir -p ~/.omp/agent/rules && ln -s "$PWD/omp/rules/overseer-worktrees.md" ~/.omp/agent/rules/overseer-worktrees.md
 ln -s "$PWD/omp/overseer-rails" ~/.omp/agent/extensions/overseer-rails
 ```
+
+| Piece | What it does |
+|---|---|
+| `overseer-subworktree` skill | Teaches agents to create worktrees the right way: sub-worktrees for their task's sub-tasks, top-level worktrees otherwise |
+| `overseer-worktrees` rule | Stops an agent that types a raw `git worktree add` or `wt switch --create` and points it at the skill |
+| `overseer-rails` extension | Keeps the agents of a worktree family informed (needs pi-intercom) |
+
+They load in omp sessions started after you link them.
 
 ## Use it
 
 1. **Show Projects:** <kbd>⌘</kbd><kbd>⌥</kbd><kbd>⇧</kbd><kbd>P</kbd>, or **Show or hide Projects** in the command palette. Press it again while the panel has focus to hide it.
-2. **Add a repo:** **+** in the header opens the folder picker.
+2. **Add a repo:** **+** in the panel's header opens the folder picker.
 3. **Open a worktree:** click its row. Its session opens, and the panel comes with it.
-4. **New worktree:** **+** next to a project. Type a branch name (and, if you like, a friendly display name). Setup runs in a background **Create** tab, and a notification tells you when it's ready.
-5. **Everything else is a right-click away:**
+4. **New worktree:** **+** next to a project. Type a branch name and, if you like, a display name. The row appears straight away as **creating** and becomes a normal row when setup is done.
+5. **Everything else is a right-click away** (see [the menus](#the-menus)).
+
+The panel stays on the left of whichever tab you're looking at, across every session, and keeps the width you give it. Each project is a local Git repository, each worktree is a row, and the worktree's open tabs are listed under it. Click a tab row to jump to that tab; hover a worktree row for its branch, path, line counts, ahead/behind and PR.
+
+<table>
+<tr>
+<td width="50%"><img src="docs/images/panel.png" alt="The Projects panel"></td>
+<td width="50%">
+
+| You see | It means |
+|---|---|
+| ● green | A session is open |
+| ● green, pulsing | An agent is working |
+| **?** yellow | An agent is waiting for your answer |
+| **✔** green · **!** red | An agent finished · failed while you were elsewhere (clears when you open its tab) |
+| ○ hollow | No session yet; click to open one |
+| **✱** amber | Uncommitted changes |
+| **conflicts** | A merge or rebase is stuck |
+| **creating** | Setup is running; the row says how long and which step |
+| **needs you?** | Setup is asking a question, or has printed nothing for a minute; click to see it |
+| **▾ 3** | Three sub-worktrees; click to fold them |
+| **2 new** | Overseer messages for this worktree's agent since you last looked |
+| **worktree gone** | Removed outside Overseer; its session is still open |
+| Linear logo · PR icon | The ticket the branch names (`feat/ENG-123-…`) · the PR's state |
+| 🧊 | Parked in the Ice Box |
+| **done** · **failed** on a tab | That tab's agent turn ended while you were elsewhere |
+| **overseer** on a tab | The session Overseer's [coordination](#coordination) messages go to |
+
+</td>
+</tr>
+</table>
+
+Tab names leave out what the row already says: a GitHub pull request tab reads `#123 <title>`, without its author and repository. Hover a tab for its full name.
+
+### The menus
 
 <img src="docs/images/context-menu.png" alt="Right-click menu on a worktree" width="420">
 
-- **Visualize PR** for a reviewer's outline of the branch's pull request
-- **Rename…** changes the row's label (the branch stays as it is)
-- **Add to Ice Box** parks a worktree at the bottom; 🧊 in the header hides or shows parked ones
-- **Close session** stops its programs and closes its tabs straight away, without a confirmation (the files stay)
-- **Delete worktree** runs `wt remove` straight away when the worktree is clean. With uncommitted or untracked changes it first lists them, like `git status --short` with line counts, and **Force delete** removes the worktree with them (`wt remove --force`). The branch is always kept. Its session closes once the directory is gone. A worktree with [sub-worktrees](#sub-worktrees) asks first whether they go too.
-- **Move under…** makes a worktree a sub-worktree of another; **Make top-level** undoes it
-- A worktree removed outside Overseer (`wt remove`, `wt merge`, `git worktree remove`) shows as **worktree gone** while its session is open. Click it to see the session; **Close session** closes it.
-- On a project: **Change base branch…**, **Set Linear workspace…** and **Remove project…** (stops showing it; the repository, worktrees and sessions stay, and adding it again brings back its names and Ice Box)
+| On a worktree | |
+|---|---|
+| **Visualize PR** | A reviewer's outline of the branch's pull request ([below](#visualize-a-pr)) |
+| **Rename…** | Changes the row's label; the branch stays as it is |
+| **Add to Ice Box** | Parks the worktree at the bottom; 🧊 in the header shows or hides parked ones |
+| **Move under…** · **Make top-level** | Makes it a [sub-worktree](#sub-worktrees) of another, or undoes that |
+| **Brief sub-worktrees…** | Sends your message to the agents of all its sub-worktrees |
+| **Close session** | Stops its programs and closes its tabs at once; the files stay |
+| **Delete worktree** | Removes a clean worktree at once. With uncommitted or untracked changes it first lists them, like `git status --short`, and asks you to **Force delete**. Branches are always kept, and the session closes once the directory is gone. A worktree with sub-worktrees asks whether they go too. |
+
+| On a project | |
+|---|---|
+| **Change base branch…** | The branch new worktrees start from |
+| **Set Linear workspace…** | Where ticket links point |
+| **Remove project…** | Stops showing it. The repository, worktrees and sessions stay, and adding it again brings back its names and Ice Box. |
+
+On a tab, **Make overseer session** picks which of a worktree's agents gets Overseer's messages.
+
+A worktree removed outside Overseer (`wt remove`, `wt merge`, `git worktree remove`) shows as **worktree gone** while its session is still open, so you can read what its agent last said. Its menu offers only **Close session**.
 
 ### Start work from a ticket
 
@@ -108,40 +138,39 @@ Overseer creates `feature/ENG-123` from the project's base branch and opens its 
 
 The project is the one you're in, or name it: *"…for ENG-123 in api"*. If the branch already exists, Carly tells you instead.
 
-### Sub-worktrees
+## Sub-worktrees
 
-A worktree can own others: an agent working on one task that spins off a branch per fix keeps those fixes under its row instead of scattering them through the list.
+A task's worktree can own the worktrees of its sub-tasks. When an agent splits a job into one branch per fix, the fixes sit under the task instead of scattering through the list:
 
 ```text
-● Space/Website Fixxer  ▾ 5
+● Space/Website Fixxer  ▾ 3
   feature/space-website-lurker
   │ ○ fix/website-coingecko-caps
   │ ○ fix/website-drain-on-term ✱
-  │ …
+  │ ○ fix/website-logging-levels
 ```
 
-- **Agents create them** with the `overseer-subworktree` skill (link it once, see [Install](#install)): `overseer-subworktree <branch> [--base <ref>] [--brief -]`, run inside the owning worktree. The owner is wherever it runs, never an argument, so an agent can only attach work to the worktree it's in. It runs `wt switch --create` with your hooks and approvals as usual. With `--brief`, Overseer starts an omp session in the new worktree with the brief as its first prompt.
-- **You adopt existing ones** with **Move under…**, which lists the top-level worktrees; **Make top-level** puts one back.
-- **The badge folds them.** `▾ 5` shows how many; click it to fold. Folded, it takes the color of the sub-worktree agent that most needs you (amber waiting, red failed, green done, accent working). The worktree you're in always shows.
-- **Each keeps its own session**, menu, PR and ticket links. Nesting is one level deep: a sub-worktree of a sub-worktree shows under the top owner.
-- **Deleting the owner asks.** **Delete only this** leaves the sub-worktrees, which move to the top level. **Delete all** also removes every sub-worktree without uncommitted changes; one with changes is kept and moves up. The owner still gets its usual Force delete check.
-- **Ice Box:** parking the owner parks its sub-worktrees with it.
-- The link is Worktrunk's per-branch variable `overseer-parent` on the sub-worktree's branch (`wt config state vars get --branch=<branch> overseer-parent`), so agents and `wt` see it too. Git branches stay independent: nesting is for the panel, not ancestry.
+- **Agents make them.** With the [omp integration](#omp-integration-optional), an agent in a task's worktree creates the worktrees of its sub-tasks as sub-worktrees, and can hand each one a brief so a fresh agent starts on it there. Work started from the primary checkout, or unrelated to the task, gets an ordinary top-level worktree.
+- **You arrange them** with **Move under…** and **Make top-level**.
+- **Each is a full worktree**, with its own session, menu, PR and ticket. Nesting is one level deep.
+- **Fold them** with the `▾ N` badge. Folded, it takes the color of the sub-worktree agent that most needs you; the worktree you're in always shows.
+- **Deleting the owner asks.** **Delete only this** moves its sub-worktrees to the top level; **Delete all** also removes the ones without uncommitted changes and keeps the rest. Parking the owner in the Ice Box parks them too.
 
-### Coordination
+The hierarchy lives in Git config (Worktrunk's per-branch `overseer-parent` variable), so `wt`, agents and every Overseer install see the same tree. Branches stay independent: nesting groups the panel, not Git history.
 
-The omp sessions of a worktree and its sub-worktrees keep each other informed, whichever side does the work. It needs the `overseer-rails` omp extension and the pi-intercom plugin (see [Install](#install)).
+## Coordination
 
-- **Before each prompt**, a session hears what changed in its parent and sub-worktrees since it last looked: new commits, files both branches edit, and the note each session left when its last turn started or ended. It's hidden context, marked as information rather than instructions.
-- **Overseer wakes the parent** when a sub-worktree's session is waiting for an answer, its turn failed, or it finished a turn with a pull request open. A sub-worktree built on its parent's branch (`--base <parent>`) hears when that branch moves, so it can rebase. These come from Tern's agent states and Git, never from what an agent wrote, and a session gets at most one a minute (extras arrive together).
-- **Agents message each other** with the `overseer_family` tool: `status` lists the family with intercom addresses, `message` sends to the parent, every sub-worktree, or one branch. For an answer before continuing, they use intercom `ask`.
-- **You brief the family** with **Brief sub-worktrees…** on the parent's menu. A sub-worktree without a session gets it when it starts one.
-- **The overseer session** is the one Overseer's messages for a worktree go to. A worktree with one omp session uses it; with several, right-click a tab and choose **Make overseer session**. Its tab shows an **overseer** badge.
-- **The panel shows it:** **N new** on a row counts Overseer's messages since you last looked at its session, and a sub-worktree's subtitle says when its session last finished a turn.
+With the [omp integration](#omp-integration-optional) and pi-intercom, the agents of a task and its sub-worktrees stay aware of each other, whichever side is doing the work:
 
-Decisions made between sessions end up in their transcripts, so omp's memory keeps them; the coordination itself needs no store of its own.
+- **Before each prompt**, an agent hears what changed in its family since it last looked: new commits, files both branches touch, and what the others are working on or just finished.
+- **Overseer wakes the task's agent** when a sub-worktree's agent is waiting for an answer, its turn failed, or it finished with a pull request open. A sub-worktree built on its parent's branch hears when that branch moves, so it can rebase.
+- **Agents message each other** with the `overseer_family` tool, or ask and wait for an answer over pi-intercom.
+- **You brief them all** with **Brief sub-worktrees…**.
+- **The panel shows it:** **N new** counts Overseer's messages since you last opened that session, and a sub-worktree's row says when its agent last checked in.
 
-### Visualize a PR
+Messages inform; they never act. Overseer decides when to send one from Tern's agent states and Git, never from what an agent wrote, and sends a session at most one a minute. Each worktree has one **overseer session** that receives them: its only omp session, or the one you pick with **Make overseer session**.
+
+## Visualize a PR
 
 <img src="docs/images/visualize-pr.png" alt="A Visualize PR outline: why the change exists, things to note, and a sequence diagram of the change" width="900">
 
@@ -159,13 +188,17 @@ flowchart LR
     wt --> trees[("git worktrees")]
     panel -- "one session per worktree" --> sessions["Tern sessions"]
     sessions --> agents["omp · claude · codex · …"]
+    panel -- "wake-ups, briefs" --> intercom["pi-intercom"]
+    intercom --> agents
+    agents -. "family news (overseer-rails)" .-> trees
     panel -. "gh pr list" .-> gh["GitHub"]
     panel -. "linear auth whoami" .-> linear["Linear"]
     panel -. "gh pr diff → omp (read-only)" .-> outline["PR outline canvas"]
 ```
 
-- **Worktrunk owns the worktrees.** Overseer calls `wt` and never passes `--yes` or `--no-hooks`, and passes `--force` only after you confirm the listed changes. Your hooks and approval prompts run in a visible tab.
+- **Worktrunk owns the worktrees.** Overseer calls `wt` and never passes `--yes` or `--no-hooks`, and passes `--force` only after you confirm the listed changes. Your hooks and approval prompts run in a background tab you can open from the row.
 - **Tern owns the sessions.** Overseer remembers which session belongs to which worktree and switches between them.
+- **Git config holds the hierarchy.** Sub-worktree links (`overseer-parent`) and each worktree's overseer session (`overseer-lead`) are Worktrunk branch variables that agents read too.
 - **The panel follows you.** Tern plugins can't pin a sidebar to the window, so Overseer keeps one Projects panel per window and moves it into whichever tab you're on.
 - **Everything else is a read.** PR badges, ticket links, agent status and change counts come from `gh`, `linear`, `git` and Tern's own agent state.
 
@@ -175,6 +208,14 @@ flowchart LR
 - Deletion rechecks the repository and branch right before it runs, and cleanliness too unless you confirmed a force delete. It never deletes a branch. The primary checkout can't be deleted.
 - Ignored files are removed with a deleted worktree's directory, so copy out anything you need first.
 - Branch names and paths are passed as arguments, never as shell text.
+- What agents say to each other is information only. Nothing Overseer does (creating, deleting, merging, approving) is triggered by an agent's message.
+
+## Troubleshooting
+
+- **A new worktree seems stuck.** Its row says what setup is doing. **needs you?** means setup is asking a question, often a Worktrunk hook approval, or has printed nothing for a minute. Click the row to open its setup tab.
+- **What did Overseer just do?** **Show Overseer's operation log** in the command palette lists every creation, deletion, brief and coordination message, with when it happened, how long it took and how it ended. The same entries are in Tern's log (`~/Library/Logs/Tern/tern.log`; search for `Overseer:`).
+- **The panel froze for a few seconds.** Tern pauses a plugin hook that runs too long. Overseer logs `Tern paused its … hook` and catches up when it resumes.
+- **Agents aren't coordinating.** Check that pi-intercom is installed for omp and that the agents' sessions started after you linked the extension (`/new` restarts one). With several omp sessions in a worktree, pick one with **Make overseer session**.
 
 ---
 
@@ -187,7 +228,9 @@ This section is for coding agents (and humans) changing Overseer. It favors comp
 Overseer is a Tern plugin written in Luau. `plugin.toml` declares two entry points:
 
 - `host.luau` runs in Tern's host and renders the `overseer.form` block, the native form used for New worktree, Rename, Change base branch and Set Linear workspace. `input.luau` is its Unicode-aware text editing.
-- `window.luau` runs once per Tern window. It owns the Projects panel (a canvas that follows you between tabs), event hooks, the background job tracker, the Carly export, and Visualize PR canvases.
+- `window.luau` runs once per Tern window. It owns the Projects panel (a canvas that follows you between tabs), event hooks, the background job tracker, coordination relays, the operation log, the Carly export, and Visualize PR canvases.
+
+Two pieces run inside omp, not Tern, and share only Git config and pi-intercom with the plugin: `omp/overseer-rails/index.ts` (a TypeScript omp extension, run by Bun) and `omp/rules/overseer-worktrees.md` (an omp TTSR rule). The `overseer-subworktree` skill's script is plain Bash.
 
 Tern APIs are typed in the definitions Tern generates: `/Applications/Tern.app/Contents/MacOS/tern plugin types <dir>` writes `tern.d.luau`. Read it before using an API you haven't used here.
 
@@ -220,9 +263,11 @@ When debugging an overrun, read the log: `exceeded its budget; paused … hook="
 | `host.luau`, `input.luau` | The native form block and its text input. |
 | `styles.css`, `icons.css` | Panel layout and status marks only: Tern's kinds draw buttons, badges, cards and menus themselves. The canvas has no `font` prop, so `styles.css` sets the panel in the UI face (`--sans`) and branches and paths back in `--mono`. `icons.css` is **generated** by `icons/generate-css.py` (plugin stylesheets can't load files, so icons are embedded as data URIs). |
 | `skills/visual-pr/` | HumanLayer's visual-pr skill, vendored unchanged (MIT). |
-| `skills/overseer-subworktree/` | The omp skill and script agents use to create a sub-worktree of the worktree they run in, optionally with a brief for its own session. |
+| `skills/overseer-subworktree/` | The omp skill and script for creating worktrees: sub-worktrees of the worktree the script runs in (optionally with a brief for their own session), top-level ones otherwise. |
+| `omp/rules/overseer-worktrees.md` | The omp TTSR rule that redirects raw worktree-creating commands to that skill. |
 | `omp/overseer-rails/index.ts` | The omp extension behind [coordination](#coordination): family summary before each prompt, notes on pi-intercom's shared board, the `overseer_family` tool. |
 | `intercom.luau` | Overseer's sender: resolves a pane to its omp session with `tern inspect`, then runs pi-intercom's CLI as `overseer`. |
+| `oplog.luau` | The operation log (`ops.log`), reading an operation's terminal, and spotting a creation's step, questions and warnings in it. |
 | `tests/test_worktree_operation.py`, `tests/test_subworktree.py` | Real Git/Worktrunk tests for the helper and the sub-worktree script. |
 
 ### State
@@ -240,6 +285,8 @@ Tern's plugin KV (`~/Library/Application Support/Tern/plugin-data/overseer/kv.js
 | `pending-form:<pane>`, `form:<token>` | `{token, mode, project, path?, response?, launched?}`, the form's answer | An open form's request, keyed by its pane, and the answer the form block posts. `forms` moves the answer into the request (`response`) so a reload resumes it. |
 | `agents-finished` | `{[paneId]: "done" \| "failed"}` | Agent turns that ended while their tab wasn't shown. Cleared when the tab is shown, the agent starts again, or the pane closes. |
 | `rails` | `{queue, unread, sentAt, checkin, told}` | Coordination relays; see [Flows](#flows). |
+
+Beside the kv store, `ops.log` in the plugin data directory is the operation log: one JSON line per creation, deletion, brief, relay and gone worktree (start, finish, duration, outcome, first warning), newest last, capped at 256 KB. The **Show Overseer's operation log** command opens it in `less`. The same entries go to Tern's log, at info for routine starts and finishes and warn for failures, warnings and "needs you".
 
 Shared with agents through Git config (Worktrunk's per-branch variables): `overseer-parent` (sub-worktree links) and `overseer-lead` (the pane id of a worktree's overseer session).
 
@@ -259,7 +306,7 @@ In-memory only: the per-project `cache` (worktrees, PRs, gone paths with open se
 
 Kept in kv `rails` (times are `os.time()` seconds): `queue`, `unread`, `sentAt`, `checkin`, `told`. `reconcileGone` drops gone worktrees' records; rate marks expire after a minute.
 
-**Sub-worktrees.** `owners(entry)` maps each worktree to the top of its `overseer-parent` chain among the listed worktrees (a link past the listing stops there, a cycle or a primary checkout as child stays on top). `model` puts owned worktrees in their owner's `children` (Ice Box ones last; an iced owner parks them; `folded` is in memory) with `childAgent` the most urgent agent among them; the view draws them in a `c<hex>` column after the owner's group, so path recovery (`w<hex>.row`) works unchanged. **Move under…** offers only top-level worktrees (`cx:pick`), and both it and **Make top-level** go through `setParent`: an optimistic `entry.parents` update, `wt config state vars set|clear`, then `refreshLinks`. Deleting an owner opens the `delete-family` confirmation; **Delete all** queues one `beginRemoval` per sub-worktree with `keepIfDirty` (a dirty one is kept with a toast instead of asking) and then the owner's own.
+**Sub-worktrees.** `owners(entry)` maps each worktree to the top of its `overseer-parent` chain among the listed worktrees (a link past the listing stops there, a cycle or a primary checkout as child stays on top). `model` puts owned worktrees in their owner's `children` (Ice Box ones last; an iced owner parks them; `folded` is in memory) with `childAgent` the most urgent agent among them; unfolded, the view wraps the owner's group and a `c` column of its sub-worktrees in a `t<hex>` lineage column, which draws the tree lines (`styles.css`), and path recovery (`w<hex>.row`, matched at the id's end) works unchanged. Rows mark the active worktree `active` rather than Tern's `pick`, whose accent bar would sit among those lines. **Move under…** offers only top-level worktrees (`cx:pick`), and both it and **Make top-level** go through `setParent`: an optimistic `entry.parents` update, `wt config state vars set|clear`, then `refreshLinks`. Deleting an owner opens the `delete-family` confirmation; **Delete all** queues one `beginRemoval` per sub-worktree with `keepIfDirty` (a dirty one is kept with a toast instead of asking) and then the owner's own.
 
 **Gone worktrees.** After each successful listing, `reconcileGone` treats a recorded path that isn't listed, isn't being deleted and isn't on disk as removed outside Overseer. It drops the path's `worktree-names` and `icebox` entries. If the path's bound session is still open it goes in `entry.gone`, and `model` adds it as a `gone` row (`goneNode` in the view: click switches to the session, the menu offers only **Close session**). Otherwise the binding is dropped. Never closing these sessions automatically is deliberate: an agent that removes its own worktree would be killed before you read its reply.
 
@@ -269,7 +316,7 @@ Kept in kv `rails` (times are `os.time()` seconds): `queue`, `unread`, `sentAt`,
 - **Overseer closes a session:** `closeManagedSession` switches away and calls `follow` first, so the panel leaves before the session closes.
 - **Tern closes the panel's tab or session:** the panel dies with it. If you wanted it (`panel-open`) and its last tab is gone, `follow` opens a fresh one in the shown tab. If its tab is still there, you closed the panel yourself, and it stays closed until the shortcut.
 
-**Create.** Form or Carly → `wt.validate` → `launchCreation` opens a background tab running `worktree-operation.sh` and records a job → `checkJobs` (on `tick`) reads the receipt → on success: toast, apply the display name by branch (`applyCreatedName`), and for ticket worktrees `startTicketAgent` opens the session and calls `cx.agents:start({command = "omp", prompt = …})`. Creation succeeded means `wt` exited 0, not that every hook succeeded.
+**Create.** Form or Carly → `wt.validate` → `launchCreation` opens a background tab running `worktree-operation.sh` and records a job → `trackCreations` (on `tick`) reads the tab's last lines: the newest `◎ Running` step for the row, a question on the last line (Worktrunk's `[y/N]`) or 60 s without output for **needs you?**; `model` shows the job as a **creating** row, right away if Worktrunk doesn't list the worktree yet → `checkJobs` reads the receipt → `jobFinished` scans the tab's output for warnings (`oplog.warnings`: Worktrunk's ▲/✗ marks and `warn:`/`error:` labels, not its echo of hook commands or its approval header), closes the tab on success, and writes the outcome to `ops.log` → toast, apply the display name by branch (`applyCreatedName`), and for ticket worktrees `startTicketAgent` opens the session and calls `cx.agents:start({command = "omp", prompt = …})`. Creation succeeded means `wt` exited 0; hook warnings are only logged.
 
 **Delete.** `beginRemoval`: `wt.validate_removal` (repository identity, branch) while the row shows **checking** → clean: removal job right away. Dirty: `wt.local_changes` (`git status --porcelain=v1 -z --no-renames` plus `git diff HEAD --numstat`, first 200 entries) fills the confirmation; **Force delete** reruns `beginRemoval` with `force`, and the helper runs in `force-remove` mode (`wt remove --force`, no cleanliness check). Either way: removal job in a background tab → receipt → close the worktree's session only if the directory is gone, then drop its name, binding and Ice Box entry. Cancelling during a check never starts a deletion (`removalChecks`).
 
@@ -294,6 +341,15 @@ python3 -B tests/test_worktree_operation.py -v
 python3 -B tests/test_subworktree.py -v
 bash -n worktree-operation.sh skills/overseer-subworktree/overseer-subworktree
 ```
+
+Check the worktree rule fires on the commands it should, and only those:
+
+```sh
+omp ttsr test --rule omp/rules/overseer-worktrees.md --source tool --tool bash 'wt switch --create fix/x --no-cd'
+omp ttsr test --rule omp/rules/overseer-worktrees.md --source tool --tool bash 'wt switch fix/existing'
+```
+
+The extension's pure helpers (`familyFromConfig`, `mergeNotes`, `promptNote`, …) are exported, so `bun` can import them for a quick check; end to end, start an omp session in a Tern pane with `omp -e omp/overseer-rails/index.ts` and look for its hidden `overseer-rails` messages in the session file.
 
 Smoke-test UI changes in an **isolated Tern window** so your real sessions are untouched:
 
@@ -327,6 +383,10 @@ Other conventions:
 - The panel moves into each tab you switch to, so every switch animates briefly and resizes the terminals in both tabs (full-screen programs redraw). In a tab split top-and-bottom it sits beside the top half.
 - A plugin reload during a Visualize PR run, including the one Tern does when you edit a file in a linked plugin, ends the run and leaves its tab on the waiting message. Run it again.
 - Multiple Tern windows work but haven't been exhaustively tested together.
+- Coordination needs omp and pi-intercom, on one machine. Other agent CLIs get the panel and status, not the rails.
+- Only a worktree's overseer session is wired to its parent: another omp session in the same sub-worktree that gets stuck doesn't wake the parent, though its notes still reach the family.
+- **needs you?** is read from the setup tab's output, so a setup step that prints nothing for a minute trips it too.
+- The worktree rule fires at most once per omp session; after that the agent relies on the skill it read.
 
 ---
 
