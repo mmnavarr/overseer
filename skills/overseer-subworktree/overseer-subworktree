@@ -4,7 +4,9 @@
 # Overseer's Projects panel nests the new worktree under it.
 #
 # The parent is wherever this runs, never an argument: an agent can't attach
-# work to a worktree it isn't in.
+# work to a worktree it isn't in. The primary checkout owns nothing: work
+# started there gets a top-level worktree (`wt switch --create`), so the
+# hierarchy groups tasks instead of piling everything under the default branch.
 #
 # --brief FILE (or --brief - for stdin) hands the new worktree its first task:
 # the text is saved as overseer-brief.md in the worktree's private git dir, and
@@ -62,6 +64,12 @@ parent_branch=$(git -C "$parent" symbolic-ref --quiet --short HEAD) || {
     printf 'The worktree at %s has a detached HEAD; check out its branch first.\n' "$parent" >&2
     exit 65
 }
+own_dir=$(git -C "$parent" rev-parse --path-format=absolute --git-dir)
+common_dir=$(git -C "$parent" rev-parse --path-format=absolute --git-common-dir)
+if [ "$own_dir" = "$common_dir" ]; then
+    printf '%s is the primary checkout, which owns no sub-worktrees.\nCreate a top-level worktree instead: wt switch --create %q\n' "$parent" "$branch" >&2
+    exit 65
+fi
 
 args=(switch --create --no-cd)
 if [ -n "$base" ]; then args+=(--base "$base"); fi

@@ -98,6 +98,15 @@ class SubworktreeTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0, args)
             self.assertNotIn("fix/no-brief", self.branches(), args)
 
+    def test_refuses_the_primary_checkout_without_creating_anything(self):
+        for cwd in (self.repo, self.repo / "src"):
+            result = self.run_command(SCRIPT, "fix/under-main", cwd=cwd, check=False)
+            self.assertNotEqual(result.returncode, 0, cwd)
+            self.assertIn("primary checkout", result.stderr)
+            self.assertIn("wt switch --create", result.stderr)
+            self.assertNotIn("fix/under-main", self.branches(), cwd)
+            self.assertEqual(self.parent_of("fix/under-main"), "")
+
     def test_refuses_a_detached_parent_without_creating_anything(self):
         self.git("checkout", "--detach", cwd=self.parent)
         result = self.run_command(SCRIPT, "fix/orphan", cwd=self.parent, check=False)
