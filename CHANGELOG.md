@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.3.1 (2026-11-05)
+
+- **Worktree creations and deletions no longer get stuck.** Overseer's 750 ms tick, which notices a finished creation or deletion, could stop for an hour without any error, leaving rows on **creating** or **deleting** long after Worktrunk was done. Overseer now restarts the tick whenever it's more than 5 s late, checked from every click, tab, focus and agent event and from a second clock that doesn't depend on Tern's timers. Each restart is recorded in the operation log (`tick restarted`).
+- **The Projects panel keeps following you.** When Tern paused Overseer's timers after a slow draw (5 s, doubling up to minutes on repeats), the panel stayed behind in its old tab and only the shortcut brought it back. It now keeps moving into the tab you're on during a pause, and finished jobs are wrapped up then too.
+- **Fewer pauses to begin with.** The panel no longer redraws on every tick (only on changes, and every 5 s for its clocks), and a draw reads the window's panes, tabs and agents once instead of three times each. A draw that still comes close to Tern's budget logs where its time went.
+
 ## 2.3.0 (2026-11-04)
 
 Requires Tern 0.9.9.

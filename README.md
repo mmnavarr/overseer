@@ -208,7 +208,8 @@ flowchart LR
 
 - **A new worktree seems stuck.** Its row says what setup is doing. **needs you?** means setup is asking a question, often a Worktrunk hook approval, or has printed nothing for a minute. Click the row to open its setup tab.
 - **What did Overseer just do?** **Show Overseer's operation log** in the command palette lists every creation, deletion, brief and coordination message, with when it happened, how long it took and how it ended. The same entries are in Tern's log (`~/Library/Logs/Tern/tern.log`; search for `Overseer:`).
-- **The panel froze for a few seconds.** Tern pauses a plugin hook that runs too long. Overseer logs `Tern paused its … hook` and catches up when it resumes.
+- **The panel froze for a few seconds.** Tern pauses a plugin's timers when one of its callbacks runs too long (5 s, doubling on repeats). Overseer logs `Tern paused its … hook`, keeps the panel following you and finishes jobs from a second clock meanwhile, and catches up when the pause ends. A draw that comes close logs `slow draw` with where its time went.
+- **A creation or deletion seems stuck after its tab says it's done.** Overseer restarts its tick when it's more than 5 s late; each restart shows in the operation log as `tick restarted`, with how long it had stopped.
 - **Agents aren't coordinating.** Check that pi-intercom is installed for omp, that `omp plugin list` shows `overseer-omp`, and that the agents' sessions started after Overseer linked it (`/new` restarts one). With several omp sessions in a worktree, pick one with **Make overseer session**.
 
 ---
@@ -293,6 +294,8 @@ In-memory only: the per-project `cache` (worktrees, PRs, gone paths with open se
 ### Flows
 
 **Refresh.** `refresh` runs `wt list --format=json` per project, beside `refreshLinks` (`wt config state get --format=json`, keeping the `overseer-parent` vars as `entry.parents` and `overseer-lead` as `entry.leads`; a failed read keeps the last links), then `refreshPullRequests` (one `gh pr list` per GitHub project, at most every 2 minutes, immediately after ↻ or a worktree set change). An open panel refreshes every 15 s from `tick`, a hidden one every 60 s so the coordination relays keep working.
+
+**Tick health.** `tick` runs every 750 ms under a generation number and records `lastTick`. `ensureTicking`, called from every event hook and from `processClock` (a `/bin/sleep 5` process whose callback runs in the process hook, outside the timer budget), starts a new generation when the tick is more than 5 s late and Tern hasn't paused the timer hook, logging `tick restarted`. While the tick was late or the timer hook is paused, the process clock also runs `checkJobs(cx, true)` (finishing jobs inline) and `follow`. The tick draws only every 5 s (`followSoon(quiet)`); events draw at once. `snapshot(cx)` fetches panes, tabs and agents once per callback for `model`.
 
 **Coordination.** Three parts, one shared vocabulary (the `overseer-parent`/`overseer-lead` branch variables and pi-intercom):
 

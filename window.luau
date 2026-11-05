@@ -28,6 +28,8 @@ local linearDefault
 local watchForms
 -- Defined with the coordination rails; refreshes call them.
 local railsAfterListing, railsAfterLinks, railsAfterPullRequests
+-- Defined with the tick; every event checks it.
+local ensureTicking
 
 local function records(key)
 	local value = tern.kv.get(key)
@@ -160,9 +162,25 @@ local AGENT_RANK = { waiting = 4, failed = 3, done = 2, working = 1 }
 -- their `busy` stays set while they sit idle, so it isn't consulted for them.
 -- Agent CLIs in plain terminals only report progress, which Tern exposes as
 -- `busy` (a CLI that hasn't reported progress yet counts as busy while it runs).
+-- One callback's view of the window's panes, tabs and agents. Each list costs
+-- several milliseconds to fetch and a draw used to fetch them six times. A
+-- callback gets a fresh `cx`, so keying by it scopes the snapshot to one; the
+-- age limit keeps it honest should a `cx` ever be reused.
+local SNAPSHOT_MS = 100
+local snapshots = setmetatable({}, { __mode = "k" })
+local function snapshot(cx)
+	local found = snapshots[cx]
+	if not found or tern.now() - found.at > SNAPSHOT_MS then
+		found = { panes = cx.session:panes(), tabs = cx.session:tabs(), agents = cx.agents:list(), at = tern.now() }
+		snapshots[cx] = found
+	end
+	return found
+end
+
 local function agentActivity(cx)
+	local seen = snapshot(cx)
 	local tabSession = {}
-	for _, tab in cx.session:tabs() do tabSession[tab.id] = tostring(tab.session) end
+	for _, tab in seen.tabs do tabSession[tab.id] = tostring(tab.session) end
 	local activity = { sessions = {}, tabs = {}, panes = {} }
 	local function mark(pane, tab, state)
 		activity.panes[pane] = state
@@ -171,14 +189,16 @@ local function agentActivity(cx)
 		if (AGENT_RANK[activity.tabs[tab]] or 0) < AGENT_RANK[state] then activity.tabs[tab] = state end
 	end
 	local finished = finishedAgents()
-	for _, agent in cx.agents:list() do
+	local panesById = {}
+	for _, pane in seen.panes do panesById[pane.pane] = pane end
+	for _, agent in seen.agents do
 		local state = if agent.state == "waiting_input" then "waiting"
 			elseif agent.state == "working" then "working"
 			else finished[tostring(agent.pane)]
-		local info = state and cx.session:pane(agent.pane)
+		local info = state and panesById[agent.pane]
 		if info and info.tab then mark(agent.pane, info.tab, state) end
 	end
-	for _, pane in cx.session:panes() do
+	for _, pane in seen.panes do
 		if pane.kind ~= "agent" and not activity.panes[pane.pane] and pane.busy and pane.running
 			and pane.tab and runsAgent(pane.running.line) then
 			mark(pane.pane, pane.tab, "working")
@@ -191,19 +211,20 @@ end
 -- the pane doing its work. The focused pane is often a plugin block, such as
 -- this navigator, so terminals and agents are preferred over plugin blocks.
 local function tabRows(cx, activity)
+	local seen = snapshot(cx)
 	local panesByTab = {}
-	for _, pane in cx.session:panes() do
+	for _, pane in seen.panes do
 		if pane.tab then
 			panesByTab[pane.tab] = panesByTab[pane.tab] or {}
 			table.insert(panesByTab[pane.tab], pane)
 		end
 	end
 	local agentPanes = {}
-	for _, agent in cx.agents:list() do
+	for _, agent in seen.agents do
 		if agent.state ~= "exited" then agentPanes[agent.pane] = true end
 	end
 	local rows = {}
-	for _, tab in cx.session:tabs() do
+	for _, tab in seen.tabs do
 		local panes = panesByTab[tab.id] or {}
 		local chosen, hasAgent, agentPane = nil, false, nil
 		for _, pane in panes do
@@ -319,7 +340,7 @@ local function worktreeAgents(cx)
 		for _, worktree in (entry.worktrees or {}) do table.insert(paths, worktree.path) end
 	end
 	local byPath = {}
-	for _, agent in cx.agents:list() do
+	for _, agent in snapshot(cx).agents do
 		if agent.state ~= "exited" and type(agent.cwd) == "string" then
 			local best, cwd = nil, comparable(agent.cwd)
 			for _, path in paths do
@@ -550,7 +571,13 @@ local function slot(cx)
 	return slotPane, if info and info.block == "overseer.form" then "form" else "canvas"
 end
 
+-- Slow draws trip Tern's budget and pause every timer (see budget.luau), so
+-- one that comes close says where its time went, at most once a minute.
+local SLOW_DRAW_MS = 35
+local slowDrawLogged = -60000
+
 local function draw(cx)
+	local started = tern.now()
 	local pane, kind = slot(cx)
 	if not pane or kind ~= "canvas" then return end
 	-- A just-opened canvas only accepts updates once canvas:list() reports it.
@@ -559,11 +586,25 @@ local function draw(cx)
 		if canvas.pane == pane then ready = true end
 	end
 	if not ready then return end
+	local modelStart = tern.now()
 	local data = model(cx)
+	local encodeStart = tern.now()
 	local signature = tern.json.encode(data)
-	if rendered[pane] == signature then return end
-	cx.canvas:set(pane, { view = view.render(data) })
-	rendered[pane] = signature
+	local renderStart, setStart = tern.now(), nil
+	if rendered[pane] ~= signature then
+		local tree = view.render(data)
+		setStart = tern.now()
+		cx.canvas:set(pane, { view = tree })
+		rendered[pane] = signature
+	end
+	local finished = tern.now()
+	if finished - started >= SLOW_DRAW_MS and finished - slowDrawLogged >= 60000 then
+		slowDrawLogged = finished
+		tern.log.warn(string.format(
+			"Overseer: slow draw %.0f ms (slot %.0f, model %.0f, encode %.0f, render %.0f, canvas %.0f; %d bytes)",
+			finished - started, modelStart - started, encodeStart - modelStart, renderStart - encodeStart,
+			if setStart then setStart - renderStart else 0, if setStart then finished - setStart else 0, #signature))
+	end
 end
 
 -- Runs fn(cx) in a timer callback of its own, reporting (not raising) errors.
@@ -2217,7 +2258,9 @@ local function jobFinished(cx, job, status)
 	end
 end
 
-local function checkJobs(cx)
+-- `inline` finishes jobs in this callback instead of one of their own: the
+-- process clock does that when timers may not be running.
+local function checkJobs(cx, inline)
 	local jobs = records("jobs")
 	local finished = {}
 	for id, job in jobs do
@@ -2240,7 +2283,12 @@ local function checkJobs(cx)
 		for _, file in { done.job.receipt, done.job.receipt .. ".pid" } do
 			if tern.fs.exists(file) then tern.fs.remove(file) end
 		end
-		separately("finish job", function(nextCx) jobFinished(nextCx, done.job, done.status) end)
+		if inline then
+			local ok, err = pcall(jobFinished, cx, done.job, done.status)
+			if not ok then tern.log.warn("Overseer: finish job failed: " .. tostring(err)) end
+		else
+			separately("finish job", function(nextCx) jobFinished(nextCx, done.job, done.status) end)
+		end
 	end
 	refresh(cx)
 end
@@ -2473,6 +2521,7 @@ for _, act in {
 -- swallow clicks until the pause ends, so it must stay too small to trip.
 tern.on("canvas_action", function(ev, _cx)
 	if not CANVAS_ACTIONS[ev.act] then return false end
+	ensureTicking("click")
 	separately("click " .. ev.act, function(nextCx) canvasAction(ev, nextCx) end)
 	return true
 end)
@@ -2490,26 +2539,56 @@ tern.chrome.status(function()
 end)
 
 -- Moves the panel into the shown tab and draws it, in a callback of its own;
--- changes made before it runs share it.
-local followQueued = false
-local function followSoon()
+-- changes made before it runs share it. `quiet` skips the draw: the tick
+-- follows every 750 ms but only needs to draw for its clocks (elapsed times,
+-- "checked in"), and a draw every tick kept Overseer near Tern's budget, so
+-- a busy machine tripped it and paused every timer.
+local followQueued, followDraws = false, false
+local TICK_DRAW_MS = 5000
+local lastTickDraw = -TICK_DRAW_MS
+local function followSoon(quiet)
+	followDraws = followDraws or not quiet
 	if followQueued then return end
 	followQueued = true
 	budget.later("follow", 0, function(cx)
 		followQueued = false
+		local drawIt = followDraws
+		followDraws = false
 		if not cx then return end
 		local ok, err = pcall(follow, cx)
 		if not ok then tern.log.warn("Projects panel: " .. tostring(err)) end
 		ok, err = pcall(markSeen, cx)
 		if not ok then tern.log.warn("Overseer: agent marks: " .. tostring(err)) end
-		redraw(cx)
+		if drawIt then redraw(cx) end
 	end)
 end
 
 -- Each piece of a tick runs in a callback of its own. The next tick is
 -- queued first, so an error can't stop the ticks.
-local function tick(cx)
-	budget.later("tick", 750, tick)
+--
+-- The tick has stopped for long stretches without Tern pausing or logging
+-- anything (2.3.0: jobs left unfinished for an hour until something restarted
+-- it), so its health is watched from outside the timer hook: a generation
+-- number lets a restart retire a lost chain, and `ensureTicking` runs from
+-- every event and from a clock driven by a process (the process hook has a
+-- budget of its own), restarting the tick when it is overdue.
+local TICK_MS = 750
+local TICK_STALL_MS = 5000
+local tickGeneration = 0
+local lastTick = tern.now()
+-- When Tern paused the timer hook, until when (tern.now() ms); 0 when running.
+local timerPausedUntil = 0
+local tick
+
+local function scheduleTick(generation)
+	budget.later("tick", TICK_MS, function(cx) tick(generation, cx) end)
+end
+
+tick = function(generation, cx)
+	-- A chain a restart replaced ends here, so two never run side by side.
+	if generation ~= tickGeneration then return end
+	scheduleTick(generation)
+	lastTick = tern.now()
 	if not cx or not localHost(cx) then return end
 	separately("form check", forms)
 	-- Resumes fast form checks after a plugin reload left a form open.
@@ -2523,7 +2602,44 @@ local function tick(cx)
 		separately("refresh", refresh)
 	end
 	separately("rails", flushRails)
-	followSoon()
+	-- Events draw at once; the tick only for its clocks, every few seconds.
+	local clocks = tern.now() - lastTickDraw >= TICK_DRAW_MS
+	if clocks then lastTickDraw = tern.now() end
+	followSoon(not clocks)
+end
+
+-- Restarts the tick when it is overdue and Tern hasn't paused the timer hook
+-- (a pause holds due timers on purpose). Returns whether it restarted.
+ensureTicking = function(source)
+	local now = tern.now()
+	local gap = now - lastTick
+	if gap < TICK_STALL_MS or now < timerPausedUntil then return false end
+	tickGeneration += 1
+	lastTick = now
+	scheduleTick(tickGeneration)
+	oplog.write("warn", { op = "tick", event = "restarted",
+		detail = string.format("no tick for %.0f s; restarted from %s", gap / 1000, source) })
+	return true
+end
+
+-- A second clock, outside the timer hook: a short process every 5 s. When the
+-- tick turns out to be overdue it is restarted. While timers can't run (the
+-- tick was overdue, or Tern paused the timer hook, which doubles to minutes on
+-- repeat trips), this clock finishes jobs whose receipts are in and keeps the
+-- panel in the shown tab, so neither waits for timers to come back.
+local function processClock()
+	local ok = pcall(budget.process, "clock", { "/bin/sleep", "5" }, { timeout_ms = 15000 }, function(_result, cx)
+		processClock()
+		if not cx or not localHost(cx) then return end
+		local restarted = ensureTicking("the process clock")
+		if restarted or tern.now() < timerPausedUntil then
+			checkJobs(cx, true)
+			local followed, err = pcall(follow, cx)
+			if not followed then tern.log.warn("Projects panel: " .. tostring(err)) end
+		end
+	end)
+	-- Can't start a process (shouldn't happen): events still check the tick.
+	if not ok then tern.log.warn("Overseer: the process clock could not start") end
 end
 
 tern.on("window_start", function(_cx)
@@ -2532,12 +2648,16 @@ tern.on("window_start", function(_cx)
 end)
 -- Every tab, pane and focus change moves the panel into the shown tab.
 for _, name in { "focus", "tab_created", "tab_closed", "pane_created", "pane_closed" } do
-	tern.on(name, function(_ev, _cx) followSoon() end)
+	tern.on(name, function(_ev, _cx)
+		ensureTicking(name)
+		followSoon()
+	end)
 end
 -- An agent starting again clears its finished mark; any change redraws. The
 -- rails record and relay the change, and an agent appearing or leaving can
 -- change a worktree's overseer session.
 tern.on("agent_state", function(ev, _cx)
+	ensureTicking("agent_state")
 	if ev.new == "working" or ev.new == "waiting_input" then
 		separately("agent state", function() setFinished(ev.pane, nil) end)
 		separately("rails agent", function(cx)
@@ -2568,10 +2688,14 @@ end)
 -- process results wait for the pause, so catching up is one follow and draw.
 tern.on("budget", function(ev, _cx)
 	tern.log.warn(budget.describe(ev))
+	if ev.hook == "timer" then
+		timerPausedUntil = if ev.state == "paused" then tern.now() + (ev.paused_ms or 0) + 1000 else 0
+	end
 	if ev.state == "resumed" then followSoon() end
 end)
 -- Timers are restarted on reload; window_start intentionally is not.
-budget.later("tick", 750, tick)
+scheduleTick(tickGeneration)
+processClock()
 -- Every load, so a fresh install or an upgrade to a new plugin dir links omp to this copy.
 budget.later("omp link", 0, function() omplink.ensure() end)
 -- 2.1's self-reload cooldown; nothing reads it any more.
