@@ -90,7 +90,7 @@ local CONFIRMATIONS = {
 	},
 	["coordination-on"] = {
 		title = "Turn on agent coordination", confirm = "Turn on", keep = "Not now",
-		icon = "message", tone = "accent", variant = "primary", hidePath = true,
+		icon = "message", tone = "accent", variant = "primary", hidePath = true, subject = "Repository",
 		lead = "The agents of a task and its sub-worktrees stay in touch.",
 		points = {
 			"The task's agent is woken when a sub-worktree's agent needs an answer, fails or opens a pull request.",
@@ -457,7 +457,16 @@ end
 
 local function confirmationNode(request)
 	local copy = CONFIRMATIONS[request.kind]
-	local body = { ui.node("text", { key = "name", spans = { ui.span(request.label, "strong") } }) }
+	local body = {}
+	if copy.subject then
+		-- "Repository: `name`": what the choice applies to, named like code.
+		table.insert(body, ui.node("row", { key = "name", role = "overseer.subjectRow", gap = "xs" }, {
+			ui.node("text", { key = "label", basis = "content", spans = { ui.span(copy.subject .. ":", "muted") } }),
+			ui.node("text", { key = "value", role = "overseer.subject", spans = { ui.span(request.label, "mono") }, truncate = "end" }),
+		}))
+	else
+		table.insert(body, ui.node("text", { key = "name", spans = { ui.span(request.label, "strong") } }))
+	end
 	if not copy.hidePath then
 		table.insert(body, ui.node("text", { key = "path", spans = { ui.span(request.path, "path") }, truncate = "middle" }))
 	end
@@ -482,7 +491,9 @@ local function confirmationNode(request)
 			ui.node("scroll", { key = "list", max = { h = "12lines" } }, rows),
 		}))
 	end
-	table.insert(body, ui.node("text", { key = "detail", spans = { ui.span(copy.detail, "muted") } }))
+	table.insert(body, ui.node("text", {
+		key = "detail", role = if copy.points then "overseer.footnote" else nil, spans = { ui.span(copy.detail, "muted") },
+	}))
 	local buttons = { button("cancel", "Cancel", "cancel=" .. request.id, { variant = "quiet", title = copy.keep }) }
 	table.insert(buttons, button("confirm", copy.confirm, "confirm=" .. request.id, {
 		variant = copy.variant, busy = request.checking == true, title = "Confirm " .. request.label,
