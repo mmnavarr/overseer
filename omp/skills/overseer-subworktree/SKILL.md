@@ -50,6 +50,9 @@ top-level owner, one level deep.
 wt switch --create <branch> --no-cd [--base <ref>]
 ```
 
+On Windows, Worktrunk is `git-wt` (`wt` is Windows Terminal): use `git-wt`
+wherever this skill says `wt`. Run the sub-worktree script with Git Bash.
+
 Never use `git worktree add`, `omp worktree add`, or the `ce-worktree` /
 `git-worktree` scripts for either kind. They put worktrees outside Worktrunk's
 layout and record no parent, so the worktree lands in the wrong place in

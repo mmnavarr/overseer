@@ -326,7 +326,9 @@ end
 
 -- macOS reaches /tmp, /var and /etc through /private; Worktrunk reports the
 -- resolved path and agents may report either, so both compare without it.
+-- Windows paths compare without case or separator style.
 local function comparable(path)
+	if wt.WINDOWS then return string.lower(wt.normalize_path(path)) end
 	local rest = string.match(path, "^/private(/[^/]+)")
 	if rest == "/tmp" or rest == "/var" or rest == "/etc" then return string.sub(path, 9) end
 	return path
@@ -1279,7 +1281,8 @@ local function briefFile(path)
 	local ok, text = pcall(tern.fs.read, path .. "/.git", 4096)
 	local gitdir = ok and type(text) == "string" and string.match(text, "^gitdir:%s*(.-)%s*$")
 	if not gitdir then return nil end
-	if string.sub(gitdir, 1, 1) ~= "/" then gitdir = path .. "/" .. gitdir end
+	gitdir = wt.normalize_path(gitdir)
+	if not wt.absolute_path(gitdir) then gitdir = path .. "/" .. gitdir end
 	return gitdir .. "/overseer-brief.md"
 end
 
@@ -1289,8 +1292,10 @@ local function startBrief(cx, project, worktree, file)
 	local okRead, brief = pcall(tern.fs.read, file, 65536)
 	if not okRead or type(brief) ~= "string" then return end
 	local started = string.gsub(file, "%.md$", ".started.md")
-	-- Tern runs the command through your shell; keep the path a single plain word.
-	if string.find(started, "[^%w%._/%-]") then
+	-- Tern runs the command through your shell; keep the path a single plain
+	-- word (on Windows after its drive, which cmd and PowerShell keep literal).
+	local word = if wt.WINDOWS then (string.gsub(started, "^%a:/", "/")) else started
+	if string.find(word, "[^%w%._/%-]") then
 		report(cx, "Its git directory path has characters a shell would split: " .. started, "Brief not started")
 		return
 	end
@@ -1298,7 +1303,7 @@ local function startBrief(cx, project, worktree, file)
 	tern.fs.write(started, brief .. "\n\n---\nOverseer started this session from the brief your parent worktree left. "
 		.. "This worktree (" .. worktree.branch .. ") is its sub-worktree: report back with the overseer_family tool (to: parent).\n")
 	tern.fs.remove(file)
-	local ternBin = wt.find_executable("tern") or "/Applications/Tern.app/Contents/MacOS/tern"
+	local ternBin = wt.tern_executable()
 	local session = boundSession(worktree.path, sessionsById(cx))
 	local argv = { ternBin, "new" }
 	if session then
@@ -1860,7 +1865,7 @@ local CHOOSE_FOLDER = {
 local function pickerStart()
 	local last = tern.kv.get("picker-start")
 	if type(last) == "string" and tern.fs.exists(last) then return last end
-	local home = (if tern.runtime.os == "windows" then tern.getenv("USERPROFILE") else tern.getenv("HOME")) or "/"
+	local home = wt.home() or "/"
 	if tern.fs.exists(home .. "/code") then return home .. "/code" end
 	return home
 end
@@ -1896,15 +1901,9 @@ local function addPicked(cx, path)
 		local all = projects()
 		table.insert(all, project)
 		tern.kv.set("projects", all)
-		-- Registration and panel discovery must not share Tern's 50 ms process hook.
-		tern.timer(0, function(addedCx)
-			if not addedCx then return end
-			tern.kv.set("picker-start", string.match(project.path, "^(.*)/[^/]+$") or project.path)
-			addedCx:toast("info", "Project added", notificationLabel(project.name))
-			tern.timer(0, function(panelCx)
-				if panelCx then navigator(panelCx) end
-			end)
-		end)
+		tern.kv.set("picker-start", string.match(project.path, "^(.*)/[^/]+$") or project.path)
+		nextCx:toast("info", "Project added", notificationLabel(project.name))
+		navigator(nextCx)
 	end)
 end
 
@@ -2660,7 +2659,10 @@ end
 -- repeat trips), this clock finishes jobs whose receipts are in and keeps the
 -- panel in the shown tab, so neither waits for timers to come back.
 local function processClock()
-	local ok = pcall(budget.process, "clock", { "/bin/sleep", "5" }, { timeout_ms = 15000 }, function(_result, cx)
+	-- Windows has no sleep command; six pings to loopback take 5 s.
+	local argv = if wt.WINDOWS then { (tern.getenv("SystemRoot") or "C:/Windows") .. "/System32/PING.EXE", "-n", "6", "127.0.0.1" }
+		else { "/bin/sleep", "5" }
+	local ok = pcall(budget.process, "clock", argv, { timeout_ms = 15000 }, function(_result, cx)
 		processClock()
 		if not cx or not localHost(cx) then return end
 		local restarted = ensureTicking("the process clock")

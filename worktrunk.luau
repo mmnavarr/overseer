@@ -3,6 +3,7 @@ local budget = require("./budget")
 local M = {}
 local TIMEOUT_MS = 15000
 local WINDOWS = tern.runtime.os == "windows"
+M.WINDOWS = WINDOWS
 
 local function absolute_path(path)
 	if type(path) ~= "string" or string.find(path, "\0", 1, true) then return false end
@@ -10,9 +11,18 @@ local function absolute_path(path)
 	return string.match(path, "^%a:[/\\]") ~= nil
 		or string.match(path, "^[/\\][/\\][^/\\]+[/\\][^/\\]+") ~= nil
 end
+M.absolute_path = absolute_path
 
+-- Windows paths use forward slashes inside Overseer, as Git prints them.
 local function normalize_path(path)
 	return if WINDOWS then (string.gsub(path, "\\", "/")) else path
+end
+M.normalize_path = normalize_path
+
+-- The home directory: %USERPROFILE% on Windows, $HOME elsewhere.
+function M.home()
+	local home = if WINDOWS then tern.getenv("USERPROFILE") else tern.getenv("HOME")
+	return if home and home ~= "" then normalize_path(home) else nil
 end
 
 local function deferred_error(done, message)
@@ -67,38 +77,51 @@ end
 
 local function find_executable(name)
 	-- Match executable-name lookup without invoking the user's shell or its hooks.
+	-- Windows tries PATHEXT's default order, so Tern's console shim (tern.com)
+	-- wins over its GUI executable.
 	local separator = if WINDOWS then ";" else ":"
-	local filename = name .. (if WINDOWS then ".exe" else "")
+	local filenames = if WINDOWS then { name .. ".com", name .. ".exe" } else { name }
 	local path = tern.getenv("PATH") or ""
 	for directory in string.gmatch(path .. separator, "(.-)" .. separator) do
 		directory = string.gsub(directory, '^"(.*)"$', "%1")
 		if absolute_path(directory) then
-			local candidate = normalize_path(directory) .. "/" .. filename
-			-- Microsoft's wt.exe alias launches Windows Terminal, not Worktrunk.
-			local terminal_alias = WINDOWS and name == "wt"
-				and string.find(string.lower(candidate), "/microsoft/windowsapps/wt.exe", 1, true) ~= nil
-			if not terminal_alias and tern.fs.exists(candidate) then return candidate end
+			for _, filename in filenames do
+				local candidate = normalize_path(directory) .. "/" .. filename
+				-- Microsoft's wt.exe alias launches Windows Terminal, not Worktrunk.
+				local terminal_alias = WINDOWS and name == "wt"
+					and string.find(string.lower(candidate), "/microsoft/windowsapps/wt.exe", 1, true) ~= nil
+				if not terminal_alias and tern.fs.exists(candidate) then return candidate end
+			end
 		end
 	end
-	local home = (if WINDOWS then tern.getenv("USERPROFILE") else tern.getenv("HOME")) or ""
-	local candidates = if WINDOWS then {
-		home .. "/.cargo/bin/" .. filename,
-		(tern.getenv("LOCALAPPDATA") or "") .. "/Microsoft/WinGet/Links/" .. filename,
+	local home = M.home() or ""
+	local directories = if WINDOWS then {
+		home .. "/.cargo/bin", home .. "/.bun/bin", home .. "/.local/bin",
+		normalize_path(tern.getenv("LOCALAPPDATA") or "") .. "/Microsoft/WinGet/Links",
 	} else {
-		"/opt/homebrew/bin/" .. name, "/usr/local/bin/" .. name,
-		home .. "/.bun/bin/" .. name, home .. "/.local/bin/" .. name,
+		"/opt/homebrew/bin", "/usr/local/bin", home .. "/.bun/bin", home .. "/.local/bin",
 	}
 	-- Winget's portable package directory works before Tern inherits its new PATH.
 	if WINDOWS and (name == "git-wt" or name == "wt") then
-		table.insert(candidates, (tern.getenv("LOCALAPPDATA") or "")
-			.. "/Microsoft/WinGet/Packages/max-sixty.worktrunk_Microsoft.Winget.Source_8wekyb3d8bbwe/" .. filename)
+		table.insert(directories, normalize_path(tern.getenv("LOCALAPPDATA") or "")
+			.. "/Microsoft/WinGet/Packages/max-sixty.worktrunk_Microsoft.Winget.Source_8wekyb3d8bbwe")
 	end
-	for _, candidate in ipairs(candidates) do
-		if tern.fs.exists(candidate) then return normalize_path(candidate) end
+	for _, directory in directories do
+		for _, filename in filenames do
+			local candidate = directory .. "/" .. filename
+			if tern.fs.exists(candidate) then return candidate end
+		end
 	end
 	return nil
 end
 M.find_executable = find_executable
+
+-- Tern's command line, for `tern inspect` and `tern new`.
+function M.tern_executable()
+	return find_executable("tern")
+		or (if WINDOWS then normalize_path(tern.getenv("LOCALAPPDATA") or "") .. "/Programs/Tern/tern.exe"
+			else "/Applications/Tern.app/Contents/MacOS/tern")
+end
 
 local wt_executable
 local function resolve_wt()
@@ -369,11 +392,7 @@ function M.list(project, done)
 		deferred_error(done, tostring(wt))
 		return
 	end
-	local argv = if WINDOWS then {
-		"powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive",
-		"-ExecutionPolicy", "Bypass", "-File", tern.plugin.dir .. "/worktrunk-list.ps1", wt, project.path,
-	} else { wt, "-C", project.path, "list", "--format=json" }
-	run(argv, function(result, err, cx)
+	run({ wt, "-C", project.path, "list", "--format=json" }, function(result, err, cx)
 		if not result then
 			done(nil, err, cx)
 		elseif result.status ~= 0 then
@@ -738,18 +757,20 @@ function M.pull_request_meta(project, number, done)
 	end)
 end
 
--- Writes the pull request's complete diff to `path` without passing it through
--- Lua, which a large diff would make slow. Read-only. done(true, err, cx)
+-- Writes the pull request's complete diff to `path`. GitHub caps diffs at
+-- 20,000 lines, well under Tern's 16 MiB stdout cap, and writing it is a
+-- native call. Read-only. done(true, err, cx)
 function M.pull_request_diff(repo, number, path, done)
 	local gh = find_executable("gh")
 	if not gh then
 		deferred_error(done, "GitHub CLI (gh) was not found")
 		return
 	end
-	-- Arguments arrive as $0..$3, never as shell text.
-	run({ "/bin/bash", "-c", '"$0" pr diff "$1" --repo "$2" > "$3"', gh, tostring(number), repo, path }, function(result, err, cx)
+	run({ gh, "pr", "diff", tostring(number), "--repo", repo }, function(result, err, cx)
 		if not result then done(nil, err, cx); return end
 		if result.status ~= 0 then done(nil, command_error("GitHub diff failed", result), cx); return end
+		local ok, writeErr = pcall(tern.fs.write, path, result.stdout)
+		if not ok then done(nil, "Cannot save the diff: " .. tostring(writeErr), cx); return end
 		done(true, nil, cx)
 	end)
 end

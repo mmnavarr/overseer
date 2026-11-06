@@ -71,8 +71,9 @@ function M.outline(project, worktree, number, ticketUrl, done)
 			local argv = { omp, "-p" }
 			for _, flag in READ_ONLY do table.insert(argv, flag) end
 			table.insert(argv, prompt(meta, dir, worktree, ticketUrl))
-			-- omp is a Bun script: its directory must be on PATH for `env bun`.
-			local path = string.match(omp, "^(.*)/[^/]+$") .. ":" .. (tern.getenv("PATH") or "/usr/bin:/bin")
+			-- omp may be a Bun script: its directory must be on PATH for `env bun`.
+			local separator = if wt.WINDOWS then ";" else ":"
+			local path = string.match(omp, "^(.*)/[^/]+$") .. separator .. (tern.getenv("PATH") or "/usr/bin:/bin")
 			wt.spawn(argv, { cwd = worktree.path, timeout_ms = TIMEOUT_MS, env = { PATH = path } },
 				function(result, runCx, startErr)
 					tern.fs.remove(dir)

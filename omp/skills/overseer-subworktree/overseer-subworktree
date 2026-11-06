@@ -55,7 +55,12 @@ if [ -n "$brief_source" ]; then
     esac
 fi
 
-wt=$(command -v wt) || { printf 'Worktrunk (wt) is not on PATH.\n' >&2; exit 69; }
+# On Windows (Git Bash, MSYS, Cygwin) wt is Windows Terminal; Worktrunk is git-wt.
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) wt_name=git-wt ;;
+    *) wt_name=wt ;;
+esac
+wt=$(command -v "$wt_name") || { printf 'Worktrunk (%s) is not on PATH.\n' "$wt_name" >&2; exit 69; }
 parent=$(git rev-parse --show-toplevel 2>/dev/null) || {
     printf 'Run this inside the worktree that owns the sub-task.\n' >&2
     exit 65
@@ -67,7 +72,7 @@ parent_branch=$(git -C "$parent" symbolic-ref --quiet --short HEAD) || {
 own_dir=$(git -C "$parent" rev-parse --path-format=absolute --git-dir)
 common_dir=$(git -C "$parent" rev-parse --path-format=absolute --git-common-dir)
 if [ "$own_dir" = "$common_dir" ]; then
-    printf '%s is the primary checkout, which owns no sub-worktrees.\nCreate a top-level worktree instead: wt switch --create %q\n' "$parent" "$branch" >&2
+    printf '%s is the primary checkout, which owns no sub-worktrees.\nCreate a top-level worktree instead: %s switch --create %q\n' "$parent" "$wt_name" "$branch" >&2
     exit 65
 fi
 
@@ -77,8 +82,8 @@ if [ -n "$base" ]; then args+=(--base "$base"); fi
 "$wt" -C "$parent" "${args[@]}" "$branch"
 
 "$wt" -C "$parent" config state vars set --branch="$branch" "overseer-parent=$parent_branch" >/dev/null || {
-    printf 'Created %s but could not record its parent. Run:\n  wt config state vars set --branch=%q overseer-parent=%q\n' \
-        "$branch" "$branch" "$parent_branch" >&2
+    printf 'Created %s but could not record its parent. Run:\n  %s config state vars set --branch=%q overseer-parent=%q\n' \
+        "$branch" "$wt_name" "$branch" "$parent_branch" >&2
     exit 1
 }
 

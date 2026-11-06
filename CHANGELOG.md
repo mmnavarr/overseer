@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.4.0 (2026-11-06)
+
+- **Overseer runs on Windows.** **+** opens Explorer's folder dialog; drive-letter and UNC paths work, and linked checkouts and junctions resolve to the same project. Worktrees are listed, created and deleted (Force delete included) through Worktrunk's `git-wt.exe`, never Windows Terminal's `wt.exe`, found on PATH or in Cargo's or Winget's folders. Creation and deletion run a PowerShell helper in a visible terminal with your hook approvals intact; its arguments are passed encoded, so paths and branch names with spaces, Unicode, apostrophes or `$` stay literal. Deletion rechecks the worktree's identity on physical paths and still keeps the branch. Sessions, agent status, sub-worktrees and their briefs, coordination and Visualize PR use Windows paths too. See the README for setup.
+- **Agents use `git-wt` on Windows.** The `overseer-subworktree` script runs Worktrunk as `git-wt` under Git Bash, and the skill and rule tell agents to type `git-wt` there.
+- **Visualize PR no longer needs Bash.** The pull request's diff is saved by Overseer instead of a shell redirect.
+
 ## 2.3.2 (2026-11-06)
 
 - **⌘T in a worktree's session follows Settings › New tabs and splits open.** With Agent chosen, the new tab runs your agent command in the worktree, as ⌘T does everywhere else; before, it always opened a shell.

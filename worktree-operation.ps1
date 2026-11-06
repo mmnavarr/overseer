@@ -13,7 +13,7 @@ if ($PSBoundParameters.Count -ne 6 -or $args.Count -ne 0) {
 }
 if ($Mode -ceq 'create') {
     $label = 'Worktree creation'
-} elseif ($Mode -ceq 'remove') {
+} elseif ($Mode -ceq 'remove' -or $Mode -ceq 'force-remove') {
     $label = 'Worktree removal'
 } else {
     [Console]::Error.WriteLine('Unknown operation: ' + $Mode)
@@ -54,6 +54,10 @@ function Get-WorktreeGitPath {
 }
 
 function Invoke-WorktreeRemoval {
+    param([bool]$Force)
+    # Recheck identity (and, unless forced, cleanliness) immediately before
+    # handing off to Worktrunk. force-remove runs only after you confirmed the
+    # worktree's uncommitted changes in Overseer.
     # Resolve physical paths, not just spelling: Git uses forward slashes while
     # Windows accepts case changes, junctions, and other aliases of a directory.
     if ($null -eq ('OverseerWorktreePath' -as [type])) {
@@ -125,17 +129,23 @@ public static class OverseerWorktreePath {
     if (-not [string]::Equals($branch, $Option, [StringComparison]::Ordinal)) {
         throw 'Refusing removal: the worktree branch changed after confirmation.'
     }
-    $changes = @(& git -C $Target status --porcelain=v1 --untracked-files=normal)
-    if ($LASTEXITCODE -ne 0) {
-        throw 'Refusing removal: cannot inspect worktree cleanliness.'
-    }
-    if ($changes.Count -ne 0) {
-        throw 'Refusing removal: worktree has uncommitted or untracked files.'
+    if (-not $Force) {
+        $changes = @(& git -C $Target status --porcelain=v1 --untracked-files=normal)
+        if ($LASTEXITCODE -ne 0) {
+            throw 'Refusing removal: cannot inspect worktree cleanliness.'
+        }
+        if ($changes.Count -ne 0) {
+            throw 'Refusing removal: worktree has uncommitted or untracked files.'
+        }
     }
 
-    # Leave ignored-file cleanup to Worktrunk, and preserve the branch. No output
-    # capture here: Worktrunk and hooks inherit the original terminal and prompts.
-    & $Worktrunk -C $Repository remove --foreground --no-delete-branch -- $Target
+    # Preserve the branch. No output capture here: Worktrunk and hooks inherit
+    # the original terminal and prompts.
+    if ($Force) {
+        & $Worktrunk -C $Repository remove --foreground --no-delete-branch --force -- $Target
+    } else {
+        & $Worktrunk -C $Repository remove --foreground --no-delete-branch -- $Target
+    }
     $script:status = $LASTEXITCODE
     if ($script:status -eq 0) {
         $exists = $true
@@ -191,7 +201,7 @@ try {
             $status = $LASTEXITCODE
         } else {
             # Do not capture this function's output: that would capture Worktrunk.
-            Invoke-WorktreeRemoval
+            Invoke-WorktreeRemoval -Force ($Mode -ceq 'force-remove')
         }
     } catch {
         if ($pidPublished) { $status = 1 }

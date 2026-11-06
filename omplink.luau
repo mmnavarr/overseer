@@ -45,8 +45,10 @@ local function run(event, argv, fn)
 end
 
 local function removeLegacy()
-	local home = tern.getenv("HOME")
-	if not home or home == "" then return end
+	-- Only the macOS README ever asked for these symlinks.
+	if wt.WINDOWS then return end
+	local home = wt.home()
+	if not home then return end
 	-- $1 is home, then pairs of (path under home, expected link target suffix).
 	local program = 'home=$1; shift; while [ $# -gt 1 ]; do p="$home/$1"; '
 		.. 'if [ -L "$p" ]; then case "$(readlink "$p")" in *"$2") rm -f -- "$p" && printf "%s\\n" "$p";; esac; fi; '
@@ -91,6 +93,12 @@ function M.ensure()
 		end
 		if not entry or type(entry.path) ~= "string" then
 			link(omp, source, false)
+			return
+		end
+		if wt.WINDOWS then
+			-- Windows paths compare without case or separator style; no Bash to resolve links.
+			local function key(path) return string.lower((string.gsub(wt.normalize_path(path), "/+$", ""))) end
+			if key(source) == key(entry.path) then removeLegacy() else link(omp, source, entry.enabled == false) end
 			return
 		end
 		-- Compare where both paths really lead; Tern may hand us a symlinked dir.

@@ -25,12 +25,13 @@ Running five agents on five branches means five checkouts, a pile of terminals, 
 
 ## Install
 
-You need macOS and:
+You need macOS or Windows and:
 
 | | Required for | |
 |---|---|---|
 | [Tern](https://docs.stencil.so/tern/) desktop | everything | 0.9.9 or later |
-| [Worktrunk](https://worktrunk.dev) (`wt`), Git, Bash | everything | tested with wt 0.40.0 |
+| [Worktrunk](https://worktrunk.dev) (`wt`; `git-wt` on Windows), Git | everything | tested with wt 0.40.0 on macOS and git-wt 0.80.0 on Windows; Windows needs Git 2.43 or later |
+| Bash (Git for Windows includes it) | everything on macOS; Worktrunk hooks and the sub-worktree script on Windows | Windows runs Overseer's own helpers in Windows PowerShell |
 | [GitHub CLI](https://cli.github.com) (`gh`), signed in | PR badges, Visualize PR | optional |
 | [Linear CLI](https://github.com/schpet/linear-cli) (`linear`), signed in | ticket links | optional |
 | [omp](https://omp.sh) | ticket agents, Visualize PR, [sub-worktrees](#sub-worktrees) made by agents | optional |
@@ -43,6 +44,25 @@ cd overseer
 ```
 
 Linking reloads the plugin whenever the source changes; `tern plugin install "$PWD"` installs a frozen copy instead.
+
+On Windows, in PowerShell with `tern` on PATH:
+
+```powershell
+winget install --id Git.Git --exact
+winget install --id max-sixty.worktrunk --exact
+git clone https://github.com/mmnavarr/overseer.git
+cd overseer
+tern plugin install (Get-Location).Path
+```
+
+After pulling changes, update the installed copy with `tern plugin install (Get-Location).Path --force`. A development link (`tern plugin link`) can reload repeatedly on Windows as Git rewrites its pack files, so use an installed copy day to day.
+
+What's different on Windows:
+
+- **+** opens Explorer's folder dialog, starting beside the last repository added, else `%USERPROFILE%\code` or your profile folder. Drive-letter and UNC paths work, and linked checkouts and junctions resolve to the same project.
+- Overseer runs Worktrunk as `git-wt.exe` (from PATH, Cargo or Winget), never `wt.exe`, which is Windows Terminal. Agents do the same: the `overseer-subworktree` skill tells them to use `git-wt`.
+- Creation and deletion run `worktree-operation.ps1` in a visible terminal, with Worktrunk's hook approvals intact. Its arguments are passed encoded rather than as shell text, so paths and branch names with spaces, Unicode, apostrophes or `$` stay literal.
+- If Git is older than 2.43, upgrade it (`winget upgrade --id Git.Git --exact`) before loading worktrees.
 
 ### omp integration
 
@@ -251,10 +271,11 @@ When debugging an overrun, read the log: `exceeded its budget; paused … hook="
 |---|---|
 | `window.luau` | Project registry, model building (`model`), drawing (`draw`/`redraw`), the following panel (`slot`, `pin`, `follow`, `followSoon`, `togglePanel`), session binding (`ensureSession`, `openWorktree`), forms swapped into the panel's slot (`openForm`, `forms`, `answerForm`, `finishForm`), background jobs (`launchCreation`, `checkJobs`, `jobFinished`), ticket links (`ticketOf`, `ticketFor`), Linear workspace lookup, Visualize PR canvases, the Carly export, hooks and the 750 ms `tick`. |
 | `budget.luau` | Living with the 50 ms rule: `later` (labelled timer callbacks), `process` (process results with logged errors), and `describe` (the log line for a `budget` event). |
-| `worktrunk.luau` | Every external command: `wt list`, validation, the creation and removal command lines, `git` status, `gh pr list`/`gh pr view`/`gh pr diff`, `linear auth whoami`. Commands are argv arrays started by `spawn`; `find_executable` checks Homebrew, `/usr/local/bin`, `~/.bun/bin` and `~/.local/bin`. |
+| `worktrunk.luau` | Every external command: `wt list`, validation, the creation and removal command lines, `git` status, `gh pr list`/`gh pr view`/`gh pr diff`, `linear auth whoami`. Commands are argv arrays started by `spawn`; `find_executable` checks PATH (on Windows `.com` then `.exe`, never Windows Terminal's `wt.exe`), then Homebrew, `/usr/local/bin`, `~/.bun/bin` and `~/.local/bin` (Cargo, Bun, `~/.local/bin` and Winget on Windows). Platform helpers (`WINDOWS`, `home`, `absolute_path`, `normalize_path`, `tern_executable`) live here too. |
 | `visualize.luau` | Visualize PR: prompt, read-only omp invocation, output extraction, cache. |
 | `view.luau` | Pure render: model → Tern UI node tree (rows, badges, tab rows, confirm strips, menus). Actions are Tern's own kinds (`button`, `buttons`, `badge`, `card`, `empty`, `shimmer`, menu rows); no HTML buttons. |
-| `worktree-operation.sh` | The helper that runs `wt switch --create` / `wt remove` in a visible terminal and writes an atomic completion receipt. |
+| `worktree-operation.sh`, `worktree-operation.ps1` | The macOS and Windows helpers that run `wt switch --create` / `wt remove` in a visible terminal and write an atomic completion receipt and a PID file. The Windows helper rechecks a removal's identity on physical paths (case, junctions). |
+| `folder-picker.ps1` | Explorer's folder dialog for **+** on Windows, run in STA Windows PowerShell; prints the chosen path as UTF-8, nothing on cancel. |
 | `host.luau`, `input.luau` | The native form block and its text input. |
 | `styles.css`, `icons.css` | Panel layout and status marks only: Tern's kinds draw buttons, badges, cards and menus themselves. The canvas has no `font` prop, so `styles.css` sets the panel in the UI face (`--sans`) and branches and paths back in `--mono`. `icons.css` is **generated** by `icons/generate-css.py` (plugin stylesheets can't load files, so icons are embedded as data URIs). |
 | `skills/visual-pr/` | HumanLayer's visual-pr skill, vendored unchanged (MIT). |
@@ -295,7 +316,7 @@ In-memory only: the per-project `cache` (worktrees, PRs, gone paths with open se
 
 **Refresh.** `refresh` runs `wt list --format=json` per project, beside `refreshLinks` (`wt config state get --format=json`, keeping the `overseer-parent` vars as `entry.parents` and `overseer-lead` as `entry.leads`; a failed read keeps the last links), then `refreshPullRequests` (one `gh pr list` per GitHub project, at most every 2 minutes, immediately after ↻ or a worktree set change). An open panel refreshes every 15 s from `tick`, a hidden one every 60 s so the coordination relays keep working.
 
-**Tick health.** `tick` runs every 750 ms under a generation number and records `lastTick`. `ensureTicking`, called from every event hook and from `processClock` (a `/bin/sleep 5` process whose callback runs in the process hook, outside the timer budget), starts a new generation when the tick is more than 5 s late and Tern hasn't paused the timer hook, logging `tick restarted`. While the tick was late or the timer hook is paused, the process clock also runs `checkJobs(cx, true)` (finishing jobs inline) and `follow`. The tick draws only every 5 s (`followSoon(quiet)`); events draw at once. `snapshot(cx)` fetches panes, tabs and agents once per callback for `model`.
+**Tick health.** `tick` runs every 750 ms under a generation number and records `lastTick`. `ensureTicking`, called from every event hook and from `processClock` (a `/bin/sleep 5` process, `PING.EXE -n 6 127.0.0.1` on Windows, whose callback runs in the process hook, outside the timer budget), starts a new generation when the tick is more than 5 s late and Tern hasn't paused the timer hook, logging `tick restarted`. While the tick was late or the timer hook is paused, the process clock also runs `checkJobs(cx, true)` (finishing jobs inline) and `follow`. The tick draws only every 5 s (`followSoon(quiet)`); events draw at once. `snapshot(cx)` fetches panes, tabs and agents once per callback for `model`.
 
 **Coordination.** Three parts, one shared vocabulary (the `overseer-parent`/`overseer-lead` branch variables and pi-intercom):
 
@@ -315,7 +336,7 @@ Kept in kv `rails` (times are `os.time()` seconds): `queue`, `unread`, `sentAt`,
 - **Overseer closes a session:** `closeManagedSession` switches away and calls `follow` first, so the panel leaves before the session closes.
 - **Tern closes the panel's tab or session:** the panel dies with it. If you wanted it (`panel-open`) and its last tab is gone, `follow` opens a fresh one in the shown tab. If its tab is still there, you closed the panel yourself, and it stays closed until the shortcut.
 
-**Create.** Form or Carly → `wt.validate` → `launchCreation` opens a background tab running `worktree-operation.sh` and records a job → `trackCreations` (on `tick`) reads the tab's last lines: the newest `◎ Running` step for the row, a question on the last line (Worktrunk's `[y/N]`) or 60 s without output for **needs you?**; `model` shows the job as a **creating** row, right away if Worktrunk doesn't list the worktree yet → `checkJobs` reads the receipt → `jobFinished` scans the tab's output for warnings (`oplog.warnings`: Worktrunk's ▲/✗ marks and `warn:`/`error:` labels, not its echo of hook commands or its approval header), closes the tab on success, and writes the outcome to `ops.log` → toast, apply the display name by branch (`applyCreatedName`), and for ticket worktrees `startTicketAgent` opens the session and calls `cx.agents:start({command = "omp", prompt = …})`. Creation succeeded means `wt` exited 0; hook warnings are only logged.
+**Create.** Form or Carly → `wt.validate` → `launchCreation` opens a background tab running `worktree-operation.sh` (`worktree-operation.ps1` on Windows, its arguments Base64-encoded JSON inside a `powershell.exe -EncodedCommand`, so only ASCII crosses your shell) and records a job → `trackCreations` (on `tick`) reads the tab's last lines: the newest `◎ Running` step for the row, a question on the last line (Worktrunk's `[y/N]`) or 60 s without output for **needs you?**; `model` shows the job as a **creating** row, right away if Worktrunk doesn't list the worktree yet → `checkJobs` reads the receipt (a helper whose PID is gone without one has failed: `kill -0`, `Get-Process` on Windows) → `jobFinished` scans the tab's output for warnings (`oplog.warnings`: Worktrunk's ▲/✗ marks and `warn:`/`error:` labels, not its echo of hook commands or its approval header), closes the tab on success, and writes the outcome to `ops.log` → toast, apply the display name by branch (`applyCreatedName`), and for ticket worktrees `startTicketAgent` opens the session and calls `cx.agents:start({command = "omp", prompt = …})`. Creation succeeded means `wt` exited 0; hook warnings are only logged.
 
 **Delete.** `beginRemoval`: `wt.validate_removal` (repository identity, branch) while the row shows **checking** → clean: removal job right away. Dirty: `wt.local_changes` (`git status --porcelain=v1 -z --no-renames` plus `git diff HEAD --numstat`, first 200 entries) fills the confirmation; **Force delete** reruns `beginRemoval` with `force`, and the helper runs in `force-remove` mode (`wt remove --force`, no cleanliness check). Either way: removal job in a background tab → receipt → close the worktree's session only if the directory is gone, then drop its name, binding and Ice Box entry. Cancelling during a check never starts a deletion (`removalChecks`).
 
@@ -340,6 +361,8 @@ python3 -B tests/test_worktree_operation.py -v
 python3 -B tests/test_subworktree.py -v
 bash -n worktree-operation.sh omp/skills/overseer-subworktree/overseer-subworktree
 ```
+
+On Windows, `python -B tests/test_worktree_operation.py -v` runs the same tests against `worktree-operation.ps1` and `git-wt.exe`, and `tests/test_subworktree.py` runs the script with Git for Windows' Bash.
 
 Check the worktree rule fires on the commands it should, and only those:
 
@@ -373,11 +396,11 @@ Other conventions:
 - Editing any file in a linked plugin reloads it in every running Tern. Develop in a separate checkout linked into an isolated window so your everyday Overseer isn't reloaded mid-edit.
 - After changing an icon, run `python3 icons/generate-css.py`.
 - Bump `version` in `plugin.toml` for user-visible changes and add an entry to [`CHANGELOG.md`](CHANGELOG.md). A change to how the panel or its state is structured is a major version.
-- Keep external commands in `worktrunk.luau` as argv arrays. Shell is only used where a redirect is needed, with arguments as `$0…$n`.
+- Keep external commands in `worktrunk.luau` as argv arrays. Bash runs only on macOS (the creation and removal launcher, and omp link's symlink checks), with arguments as positional parameters, never as shell text. Anything that touches paths must work with Windows drive-letter and UNC paths too: use `wt.absolute_path`, `wt.normalize_path` and `wt.home()`.
 
 ### Known limitations
 
-- Windows Visualize PR still uses a POSIX Bash diff helper and is not supported. Project addition, worktree discovery, creation/removal, and sessions use native Windows paths. Linux has no folder picker yet.
+- No Linux support: there's no folder picker for it yet.
 - Visualize PR fails on PRs whose diff exceeds GitHub's 20,000-line API limit (`gh pr diff` returns HTTP 406). The tab shows the error.
 - The panel moves into each tab you switch to, so every switch animates briefly and resizes the terminals in both tabs (full-screen programs redraw). In a tab split top-and-bottom it sits beside the top half.
 - A plugin reload during a Visualize PR run, including the one Tern does when you edit a file in a linked plugin, ends the run and leaves its tab on the waiting message. Run it again.
