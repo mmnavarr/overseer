@@ -262,6 +262,14 @@ They load in omp sessions started after the link (`/new` restarts one); `omp plu
 
 ## Developing
 
+To work on Overseer, use a checkout linked into Tern instead of the installed copy (Tern then reloads the plugin whenever a file in the checkout changes):
+
+```sh
+tern plugin remove overseer   # if it was installed with `tern plugin install`
+git clone https://github.com/mmnavarr/overseer.git && cd overseer
+tern plugin link "$PWD"
+```
+
 Run the helper's tests (they use temporary repos, config and approvals):
 
 ```sh

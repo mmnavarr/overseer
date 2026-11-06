@@ -24,21 +24,24 @@ Overseer is a [Tern](https://docs.stencil.so/tern/) plugin for running many codi
 
 ## Install
 
-macOS, [Tern](https://docs.stencil.so/tern/) 0.9.9+, [Worktrunk](https://worktrunk.dev) (`wt`) and Git. Optional extras light up more:
+Run this in any terminal:
+
+```sh
+tern plugin install github.com/mmnavarr/overseer
+```
+
+That's it. Tern downloads Overseer into its own plugins folder and loads it; no clone, no build. Press <kbd>⌘</kbd><kbd>⌥</kbd><kbd>⇧</kbd><kbd>P</kbd> to open Projects.
+
+**You'll need** macOS, [Tern](https://docs.stencil.so/tern/) 0.9.9 or later, and [Worktrunk](https://worktrunk.dev) (`brew install worktrunk`). These are optional and add features:
 
 | Add | To get |
 |---|---|
 | [GitHub CLI](https://cli.github.com) (`gh`), signed in | PR badges, Visualize PR |
 | [Linear CLI](https://github.com/schpet/linear-cli) (`linear`), signed in | Ticket links |
-| [omp](https://omp.sh) | Ticket agents, Visualize PR, sub-worktrees made by agents |
+| [omp](https://omp.sh) | Ticket agents, Visualize PR, sub-worktrees made by agents (Overseer sets up its omp side itself) |
 | [pi-intercom](https://github.com/nicobailon/pi-intercom) and [Bun](https://bun.sh) | Agents in a task keeping each other informed |
 
-```sh
-git clone https://github.com/mmnavarr/overseer.git && cd overseer
-/Applications/Tern.app/Contents/MacOS/tern plugin link "$PWD"
-```
-
-With omp installed, Overseer sets up its omp side by itself.
+**Update** with `tern plugin install github.com/mmnavarr/overseer --force`. **Uninstall** with `tern plugin remove overseer` (and `omp plugin uninstall overseer-omp` if you use omp).
 
 ## Use it
 
