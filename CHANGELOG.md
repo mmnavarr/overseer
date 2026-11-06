@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.3.3 (2026-11-06)
+
+- **Fixed: coordination with Worktrunk 0.81.** Worktrunk 0.81 moved a worktree's commit to `head` and its ahead/behind counts to `default_branch` and `upstream` in `wt list`'s JSON. Overseer only read the old names, so on 0.81 sub-worktrees were never told their parent's branch moved, a task's agent could miss a sub-worktree finishing with new commits on its pull request, and row tooltips lost their ahead/behind counts. Overseer now reads both, and is tested with Worktrunk 0.40 and 0.81 ([#4](https://github.com/mmnavarr/overseer/issues/4)).
+- **Install with one command.** `tern plugin install github.com/mmnavarr/overseer`, with no clone; `--force` updates it. Working on Overseer itself still uses a linked checkout (see CONTRIBUTING.md).
+- The README is shorter and leads with an animated tour; the full reference moved to AGENTS.md, and there are now contributing notes and issue forms.
+
 ## 2.3.2 (2026-11-06)
 
 - **⌘T in a worktree's session follows Settings › New tabs and splits open.** With Agent chosen, the new tab runs your agent command in the worktree, as ⌘T does everywhere else; before, it always opened a shell.
