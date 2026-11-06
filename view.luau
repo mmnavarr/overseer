@@ -89,9 +89,15 @@ local CONFIRMATIONS = {
 		detail = "Stops showing this repository in Projects. Keeps the repository, its worktrees, branches and open sessions. Adding it again restores its names and Ice Box.",
 	},
 	["coordination-on"] = {
-		title = "Turn on agent coordination?", confirm = "Turn on", keep = "Not now",
-		icon = "message", tone = "accent", variant = "primary",
-		detail = "The agents of a task and its sub-worktrees stay in touch: Overseer wakes the task's agent when a sub-worktree's agent needs an answer, fails or opens a pull request, tells sub-worktrees when their parent's branch moves, and passes on messages agents send each other. omp agents also get a short summary of their relatives' news before each prompt. Messages only inform; nothing acts on them. Turn it off from this menu at any time.",
+		title = "Turn on agent coordination", confirm = "Turn on", keep = "Not now",
+		icon = "message", tone = "accent", variant = "primary", hidePath = true,
+		lead = "The agents of a task and its sub-worktrees stay in touch.",
+		points = {
+			"The task's agent is woken when a sub-worktree's agent needs an answer, fails or opens a pull request.",
+			"Sub-worktrees hear when their parent's branch moves.",
+			"Agents can message each other; omp agents also see their family's news before each prompt.",
+		},
+		detail = "Messages only inform; nothing acts on them. Turn it off from this menu any time.",
 	},
 	-- A worktree with sub-worktrees: delete it alone (they move to the top
 	-- level) or with them. Either way it then gets its own clean/dirty check.
@@ -451,10 +457,18 @@ end
 
 local function confirmationNode(request)
 	local copy = CONFIRMATIONS[request.kind]
-	local body = {
-		ui.node("text", { key = "name", spans = { ui.span(request.label, "strong") } }),
-		ui.node("text", { key = "path", spans = { ui.span(request.path, "path") }, truncate = "middle" }),
-	}
+	local body = { ui.node("text", { key = "name", spans = { ui.span(request.label, "strong") } }) }
+	if not copy.hidePath then
+		table.insert(body, ui.node("text", { key = "path", spans = { ui.span(request.path, "path") }, truncate = "middle" }))
+	end
+	if copy.lead then table.insert(body, ui.node("text", { key = "lead", spans = { ui.span(copy.lead) } })) end
+	if copy.points then
+		local points = {}
+		for index, point in ipairs(copy.points) do
+			table.insert(points, ui.node("text", { key = "p" .. tostring(index), role = "overseer.point", spans = { ui.span(point) } }))
+		end
+		table.insert(body, ui.node("col", { key = "points", role = "overseer.points", gap = "xs" }, points))
+	end
 	if request.changes then table.insert(body, changeList(request.changes)) end
 	if request.children then
 		local rows = {}
@@ -479,7 +493,7 @@ local function confirmationNode(request)
 		}))
 	end
 	table.insert(body, ui.node("row", { key = "buttons", gap = "sm", justify = "end", wrap = true }, buttons))
-	return ui.card(copy.title, body, { key = "confirmation", tone = copy.tone, icon = copy.icon })
+	return ui.card(copy.title, body, { key = "confirmation", role = "overseer.confirmation", tone = copy.tone, icon = copy.icon })
 end
 
 local function projectNode(model, project)

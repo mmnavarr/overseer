@@ -308,6 +308,40 @@
   border-radius: var(--r-ctl);
   background: var(--l1);
 }
+/* Confirm cards: the question reads as the card's title, not a label. */
+[data-role='overseer.confirmation'] > .sf-card-head {
+  min-height: 36px;
+}
+[data-role='overseer.confirmation'] > .sf-card-head .sf-head {
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 20px;
+}
+/* What a choice does, as a short list rather than a paragraph. */
+[data-role='overseer.points'] {
+  gap: 4px;
+  padding-left: 2px;
+}
+[data-role='overseer.point'] {
+  position: relative;
+  padding-left: 14px;
+  color: var(--t2);
+  font-size: 12.5px;
+  line-height: 17px;
+}
+[data-role='overseer.point']::before {
+  content: '';
+  position: absolute;
+  left: 2px;
+  top: 7px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+[data-role='overseer.confirmation'] [data-role='overseer.points'] ~ .sf-text .sf-t-muted {
+  font-size: 12px;
+}
 
 /* The form block opens in sans (`font = "sans"`); only its padding is ours. */
 [data-role='overseer.form'] {
