@@ -415,10 +415,10 @@ local function worktreeNode(worktree, activePath)
 		table.insert(head, ui.node("row", { key = "links", role = "overseer.links" }, links))
 	end
 	-- A renamed row keeps its branch visible; otherwise the directory helps
-	-- tell apart worktrees whose branch names share a long ticket prefix.
+	-- tell apart worktrees whose branch names share a long ticket prefix. The
+	-- primary checkout's Primary badge already says what it is.
 	local subtitle = if worktree.creating then creatingSubtitle(worktree.creating)
 		elseif worktree.displayName then branch
-		elseif worktree.is_main then "primary checkout · " .. basename(worktree.path)
 		else basename(worktree.path)
 	-- A sub-worktree also says when its session last finished a turn.
 	if worktree.checkin and not worktree.creating then subtitle ..= " · checked in " .. worktree.checkin end
