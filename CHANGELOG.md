@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.4.1 (2026-11-06)
+
+- **Clearer worktree state marks.** Waiting, finished and failed agents show as filled circles in the state's colour with a `?`, check or `!` on top, sized and centred like the other dots, instead of heavy text characters.
+- **Deleting pulses red, creating pulses amber**, like the green pulse of a working agent, and the Deleting badge is red. Checking before a deletion stays a still amber dot.
+- **Labels start with a capital:** Done, Failed, Overseer, Creating, Needs you?, Deleting, Checking, Conflicts, Worktree gone, Running, No pane.
+- **The primary checkout row shows just its folder**, since its Primary badge already says what it is.
+- **Confirmation cards read better.** The question is the card's title, at title size. The agent coordination card names the repository as `Repository: name`, drops the path and lists what turning it on does as three short points.
+- The README tour, panel, menu and social card show the new marks.
+
 ## 2.4.0 (2026-11-06)
 
 - **Agent coordination is opt-in, per repository.** Turn it on with **Turn on agent coordination…** on a project's right-click menu, and off from the same place. Off, Overseer sends no wake-ups or relays, and hides **Brief sub-worktrees…**, **Make overseer session**, **N new**, check-ins and the **overseer** badge; omp agents get no family summary. Sub-worktrees themselves work either way. Repositories that already used coordination keep it on when you update; every other repository starts off.

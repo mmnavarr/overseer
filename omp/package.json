@@ -1,6 +1,6 @@
 {
 	"name": "overseer-omp",
-	"version": "2.4.0",
+	"version": "2.4.1",
 	"private": true,
 	"description": "Overseer's omp half: the overseer-subworktree skill, the overseer-worktrees rule and the overseer-rails extension. Overseer links it into omp when it loads.",
 	"omp": {
