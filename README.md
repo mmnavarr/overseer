@@ -4,16 +4,21 @@
 
 **Mission control for parallel agent work.**
 
+[![Release](https://img.shields.io/github/v/release/mmnavarr/overseer?label=release)](https://github.com/mmnavarr/overseer/releases/latest)
+[![License: MIT](https://img.shields.io/github/license/mmnavarr/overseer)](LICENSE)
+![macOS](https://img.shields.io/badge/platform-macOS-lightgrey)
+[![Tern 0.9.9+](https://img.shields.io/badge/Tern-0.9.9%2B-blue)](https://docs.stencil.so/tern/)
+
 One panel for every branch you have in flight: its worktree, its agents, its pull request and its ticket.<br>
 Click a row and you're in that branch's own workspace.
 
-<img src="docs/images/hero.png" alt="Overseer's Projects panel, with sub-worktrees nested under a task, beside an omp agent asking a question" width="900">
+<img src="docs/images/tour.png" alt="A tour of Overseer: the Projects panel with an agent asking a question, sub-worktrees folding and unfolding, a sub-worktree's agent at work, the right-click menu, and a Visualize PR outline" width="900">
 
 </div>
 
 ---
 
-Overseer is a [Tern](https://docs.stencil.so/tern/) plugin for running many coding agents at once without losing track of them.
+Running five agents on five branches means five checkouts, a pile of terminals, and losing track of which agent is stuck waiting for you. Overseer is a [Tern](https://docs.stencil.so/tern/) plugin that keeps them all in one panel.
 
 - **One session per worktree.** Each branch gets its own Tern session with its own tabs and agents. Switching is one click.
 - **See every agent at a glance.** Working, waiting for you, finished or failed, right on the row.
@@ -21,6 +26,16 @@ Overseer is a [Tern](https://docs.stencil.so/tern/) plugin for running many codi
 - **PRs and tickets on the row.** GitHub PR state and the Linear ticket, one click away.
 - **Quiet worktrees.** Creation and deletion run through [Worktrunk](https://worktrunk.dev) in the background, hooks and all.
 - **Visualize PR.** Turns a pull request into a diagram-first outline for review.
+
+### Works with your agents
+
+| | Any agent CLI | [omp](https://omp.sh) | omp + [pi-intercom](https://github.com/nicobailon/pi-intercom) |
+|---|:-:|:-:|:-:|
+| Sessions per worktree, status on every row, PRs and tickets | ✓ | ✓ | ✓ |
+| Agents started from a ticket, Visualize PR, sub-worktrees made by agents | | ✓ | ✓ |
+| Agents in a task keeping each other informed | | | ✓ |
+
+Claude Code, Codex, Gemini, Aider and others get the panel and their status; omp unlocks the rest.
 
 ## Install
 
@@ -32,7 +47,7 @@ tern plugin install github.com/mmnavarr/overseer
 
 That's it. Tern downloads Overseer into its own plugins folder and loads it; no clone, no build. Press <kbd>⌘</kbd><kbd>⌥</kbd><kbd>⇧</kbd><kbd>P</kbd> to open Projects.
 
-**You'll need** macOS, [Tern](https://docs.stencil.so/tern/) 0.9.9 or later, and [Worktrunk](https://worktrunk.dev) (`brew install worktrunk`). These are optional and add features:
+**You'll need** macOS, [Tern](https://docs.stencil.so/tern/) 0.9.9 or later, and [Worktrunk](https://worktrunk.dev) (`brew install worktrunk`; tested with 0.40 and 0.81). These are optional and add features:
 
 | Add | To get |
 |---|---|
@@ -108,9 +123,19 @@ flowchart LR
     panel -. "tickets" .-> linear["Linear"]
 ```
 
-Worktrunk owns the worktrees, Tern owns the sessions, and Overseer never deletes a branch. Something stuck? **Show Overseer's operation log** in the command palette says what happened.
+Worktrunk owns the worktrees, Tern owns the sessions, and Overseer never deletes a branch.
 
-Changing Overseer, or want the details? [AGENTS.md](AGENTS.md) has the full reference.
+## Troubleshooting
+
+- **"Worktrunk (wt) was not found".** Run `brew install worktrunk`. Overseer looks on Tern's PATH, then in `/opt/homebrew/bin`, `/usr/local/bin`, `~/.bun/bin` and `~/.local/bin`.
+- **No PR badges.** Sign in with `gh auth login`. Badges only show for repositories whose `origin` is on GitHub.
+- **No ticket links.** Sign in with `linear auth login`, or pick a workspace with **Set Linear workspace…** on the project's right-click menu. The branch name needs a ticket ID such as `ENG-123`.
+- **A new worktree says "needs you?".** Setup is asking a question, usually a Worktrunk hook approval. Click the row to answer it.
+- **Anything else.** **Show Overseer's operation log** in the command palette lists what Overseer did and how it ended. If that doesn't explain it, [open an issue](https://github.com/mmnavarr/overseer/issues/new/choose) with your Tern and Worktrunk versions.
+
+## Contributing
+
+Bug reports and pull requests are welcome. Please [open an issue](https://github.com/mmnavarr/overseer/issues/new/choose) before starting on a feature, so we can check it isn't already there or planned. [CONTRIBUTING.md](CONTRIBUTING.md) covers setup and the checklist; [AGENTS.md](AGENTS.md) is the full reference to how Overseer works.
 
 ## Credits
 

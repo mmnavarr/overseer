@@ -1,0 +1,43 @@
+name: Bug report
+description: Something in Overseer doesn't work as described.
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Operation log
+      description: Run **Show Overseer's operation log** in Tern's command palette and paste the lines around the problem.
+      render: text
+  - type: input
+    id: tern
+    attributes:
+      label: Tern version
+      description: Output of `tern --version`.
+    validations:
+      required: true
+  - type: input
+    id: overseer
+    attributes:
+      label: Overseer version
+      description: Shown by `tern plugin list`.
+    validations:
+      required: true
+  - type: input
+    id: worktrunk
+    attributes:
+      label: Worktrunk version
+      description: Output of `wt --version`.
+    validations:
+      required: true
+  - type: input
+    id: agent
+    attributes:
+      label: Agent CLI and version
+      description: For example omp 18.17.0, Claude Code 2.1, Codex 0.50. Leave empty if it doesn't involve an agent.

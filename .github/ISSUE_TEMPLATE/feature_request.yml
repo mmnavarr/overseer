@@ -1,0 +1,23 @@
+name: Feature idea
+description: Suggest something Overseer could do. Please check the README and AGENTS.md first; it may already be there.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do, and what gets in the way today?
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What you'd like
+      description: How you imagine it working. Screenshots or sketches welcome.
+  - type: checkboxes
+    id: checked
+    attributes:
+      label: Before you send
+      options:
+        - label: I checked the README, AGENTS.md and open issues, and this isn't there yet.
+          required: true
