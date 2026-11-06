@@ -154,11 +154,13 @@
   padding-bottom: 2px;
 }
 
-/* Every worktree status indicator (dot, glyph or 🧊) fills the same 12px
+/* Every worktree status indicator (dot, mark or 🧊) fills the same 12px
    square, so branch names line up whatever state a row is in. */
 [data-role='overseer.dotOpen'],
 [data-role='overseer.dotIdle'],
 [data-role='overseer.dotBusy'],
+[data-role='overseer.dotCreating'],
+[data-role='overseer.dotDeleting'],
 [data-role='overseer.dotAgent'],
 [data-role='overseer.statusWaiting'],
 [data-role='overseer.statusFailed'],
@@ -172,6 +174,8 @@
 [data-role='overseer.dotOpen'],
 [data-role='overseer.dotIdle'],
 [data-role='overseer.dotBusy'],
+[data-role='overseer.dotCreating'],
+[data-role='overseer.dotDeleting'],
 [data-role='overseer.dotAgent'],
 [data-role='overseer.dotTab'],
 [data-role='overseer.dotTabAgent'],
@@ -189,41 +193,72 @@
 [data-role='overseer.dotBusy'] {
   background: var(--warn);
 }
-/* An agent is working in this worktree's session: the green dot pulses. */
+/* Live work pulses: green while an agent works, amber while setup creates the
+   worktree, red while it's being deleted. */
 [data-role='overseer.dotAgent'],
 [data-role='overseer.dotTabAgent'] {
   background: var(--ok);
-  animation: overseer-agent-pulse 1.6s ease-out infinite;
+  animation: overseer-pulse-ok 1.6s ease-out infinite;
 }
-@keyframes overseer-agent-pulse {
+[data-role='overseer.dotCreating'] {
+  background: var(--warn);
+  animation: overseer-pulse-warn 1.6s ease-out infinite;
+}
+[data-role='overseer.dotDeleting'] {
+  background: var(--bad);
+  animation: overseer-pulse-bad 1.2s ease-out infinite;
+}
+@keyframes overseer-pulse-ok {
   from { box-shadow: 0 0 0 0 rgb(from var(--ok) r g b / 70%); }
   to { box-shadow: 0 0 0 6px rgb(from var(--ok) r g b / 0%); }
 }
-/* States that need you show a bare glyph in the dot's place: an amber ? when
-   an agent asked something, a green ✔ when it finished out of sight, a red !
-   when its turn failed. */
+@keyframes overseer-pulse-warn {
+  from { box-shadow: 0 0 0 0 rgb(from var(--warn) r g b / 70%); }
+  to { box-shadow: 0 0 0 6px rgb(from var(--warn) r g b / 0%); }
+}
+@keyframes overseer-pulse-bad {
+  from { box-shadow: 0 0 0 0 rgb(from var(--bad) r g b / 75%); }
+  to { box-shadow: 0 0 0 6px rgb(from var(--bad) r g b / 0%); }
+}
+/* States that need you: a filled circle in the state's colour with its glyph
+   on top (amber ? asked something, green check finished out of sight, red !
+   turn failed). The glyph is an SVG over the themed colour. */
 [data-role='overseer.statusWaiting'],
 [data-role='overseer.statusFailed'],
 [data-role='overseer.statusDone'] {
-  font-size: 15px;
-  font-weight: 900;
-  line-height: 12px;
-  text-align: center;
+  border-radius: 50%;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: 11px 11px;
 }
 [data-role='overseer.statusWaiting'] {
-  color: var(--warn);
+  background-color: var(--warn);
+  background-image: url("data:image/svg+xml;utf8,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20width=%2216%22%20height=%2216%22%20viewBox=%220%200%2016%2016%22%20fill=%22none%22%20stroke=%22%231c1d21%22%20stroke-width=%222.2%22%20stroke-linecap=%22round%22%20stroke-linejoin=%22round%22%3E%3Cpath%20d=%22M6.1%206.2a2%202%200%201%201%202.7%201.9c-.5.2-.8.6-.8%201.1v.3%22/%3E%3Cpath%20d=%22M8%2011.9h.01%22%20stroke-width=%222.6%22/%3E%3C/svg%3E");
 }
 [data-role='overseer.statusFailed'] {
-  color: var(--bad);
+  background-color: var(--bad);
+  background-image: url("data:image/svg+xml;utf8,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20width=%2216%22%20height=%2216%22%20viewBox=%220%200%2016%2016%22%20fill=%22none%22%20stroke=%22%23ffffff%22%20stroke-width=%222.2%22%20stroke-linecap=%22round%22%20stroke-linejoin=%22round%22%3E%3Cpath%20d=%22M8%204.4v4.3%22/%3E%3Cpath%20d=%22M8%2011.7h.01%22%20stroke-width=%222.6%22/%3E%3C/svg%3E");
 }
 [data-role='overseer.statusDone'] {
-  color: var(--ok);
+  background-color: var(--ok);
+  background-image: url("data:image/svg+xml;utf8,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20width=%2216%22%20height=%2216%22%20viewBox=%220%200%2016%2016%22%20fill=%22none%22%20stroke=%22%23ffffff%22%20stroke-width=%222.2%22%20stroke-linecap=%22round%22%20stroke-linejoin=%22round%22%3E%3Cpath%20d=%22M4.6%208.4l2.3%202.3%204.6-4.9%22/%3E%3C/svg%3E");
 }
 @media (prefers-reduced-motion: reduce) {
   [data-role='overseer.dotAgent'],
-  [data-role='overseer.dotTabAgent'] {
+  [data-role='overseer.dotTabAgent'],
+  [data-role='overseer.dotCreating'],
+  [data-role='overseer.dotDeleting'] {
     animation: none;
+  }
+  [data-role='overseer.dotAgent'],
+  [data-role='overseer.dotTabAgent'] {
     box-shadow: 0 0 0 3px rgb(from var(--ok) r g b / 35%);
+  }
+  [data-role='overseer.dotCreating'] {
+    box-shadow: 0 0 0 3px rgb(from var(--warn) r g b / 35%);
+  }
+  [data-role='overseer.dotDeleting'] {
+    box-shadow: 0 0 0 3px rgb(from var(--bad) r g b / 35%);
   }
 }
 /* Ice Box worktrees show 🧊 in the dot's place. */

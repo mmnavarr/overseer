@@ -83,7 +83,7 @@ In-memory only: the per-project `cache` (worktrees, PRs, gone paths with open se
 
 **Tick health.** `tick` runs every 750 ms under a generation number and records `lastTick`. `ensureTicking`, called from every event hook and from `processClock` (a `/bin/sleep 5` process whose callback runs in the process hook, outside the timer budget), starts a new generation when the tick is more than 5 s late and Tern hasn't paused the timer hook, logging `tick restarted`. While the tick was late or the timer hook is paused, the process clock also runs `checkJobs(cx, true)` (finishing jobs inline) and `follow`. The tick draws only every 5 s (`followSoon(quiet)`); events draw at once. `snapshot(cx)` fetches panes, tabs and agents once per callback for `model`.
 
-**Coordination.** Opt-in per repository: `overseer.coordination=true` in the repository's shared Git config (`wt.coordination` / `wt.set_coordination`, read beside the links on every refresh into `entry.coordination`). Off, Overseer queues and delivers nothing, drops what was queued, hides **Brief sub-worktrees…**, **Make overseer session**, **N new**, check-ins and the **overseer** badge, and the extension stays silent. Turning it on goes through a confirmation card; turning it off doesn't. In 2.4.0, `railsAfterSwitch` keeps it on, once per repository (kv `coordination-migrated`), where coordination was in use before it became opt-in (an `overseer-lead` var or `rails` records for one of its worktrees). Three parts, one shared vocabulary (the `overseer-parent`/`overseer-lead` branch variables and `<git-common-dir>/overseer/`):
+**Coordination.** Opt-in per repository: `overseer.coordination=true` in the repository's shared Git config (`wt.coordination` / `wt.set_coordination`, read beside the links on every refresh into `entry.coordination`). Off, Overseer queues and delivers nothing, drops what was queued, hides **Brief sub-worktrees…**, **Make overseer session**, **N new**, check-ins and the **Overseer** badge, and the extension stays silent. Turning it on goes through a confirmation card; turning it off doesn't. In 2.4.0, `railsAfterSwitch` keeps it on, once per repository (kv `coordination-migrated`), where coordination was in use before it became opt-in (an `overseer-lead` var or `rails` records for one of its worktrees). Three parts, one shared vocabulary (the `overseer-parent`/`overseer-lead` branch variables and `<git-common-dir>/overseer/`):
 
 - *The omp extension* (`omp/overseer-rails/index.ts`) runs in each interactive omp session in a Tern pane (subagents and the advisor are headless and skip it), and only while `git config --bool overseer.coordination` says `true` (cached like the family). `before_agent_start` reads the family from git config (`worktrunk.state.<branch>.vars.*`, milliseconds where `wt` takes ~0.4 s), diffs each relative's branch tip against what this session last saw (kept as `overseer-rails.seen` session entries, so it survives resume), adds the latest note from the board, and flags files both branches change against `origin/HEAD`. Notes are lines in `<git-common-dir>/overseer/notes.jsonl` (appended once per turn; compacted to the newest 80 past 256 KiB). `overseer_family` action `message` writes one JSON file per recipient branch into `<git-common-dir>/overseer/outbox/` (temp file, then rename) and returns at once; it never waits for a reply.
 - *Overseer's relays* (`window.luau`, "Coordination rails"): `onAgentChange` (from `agent_state`/`agent_finished`) records check-ins and relays a sub-worktree's lead going waiting or failed, and remembers a finished turn so `noticeFinished` relays it once its PR is known (once per PR and head commit, within 15 minutes). `noticeMoves` compares each listing's head commits with the last: a parent that moved notifies children containing its old tip when that tip isn't on the base branch. `deliverMail` (every tick) reads each coordinating repository's outbox, queues each message for the recipient branch's worktree with who sent it, and deletes the file (unreadable or undeliverable ones are logged and deleted too). `tell` queues per worktree; `flushRails` hands the queue to the worktree's lead (`leadOf`: `overseer-lead` while its agent runs, else the only agent, any CLI) with `cx.agents:ask`, at most once a minute per pane unless the message is marked urgent (briefs, agent mail), three attempts. `syncLeads` keeps `overseer-lead` true for worktrees in a family.
@@ -101,9 +101,9 @@ Kept in kv `rails` (times are `os.time()` seconds): `queue`, `unread`, `sentAt`,
 - **Overseer closes a session:** `closeManagedSession` switches away and calls `follow` first, so the panel leaves before the session closes.
 - **Tern closes the panel's tab or session:** the panel dies with it. If you wanted it (`panel-open`) and its last tab is gone, `follow` opens a fresh one in the shown tab. If its tab is still there, you closed the panel yourself, and it stays closed until the shortcut.
 
-**Create.** Form or Carly → `wt.validate` → `launchCreation` opens a background tab running `worktree-operation.sh` and records a job → `trackCreations` (on `tick`) reads the tab's last lines: the newest `◎ Running` step for the row, a question on the last line (Worktrunk's `[y/N]`) or 60 s without output for **needs you?**; `model` shows the job as a **creating** row, right away if Worktrunk doesn't list the worktree yet → `checkJobs` reads the receipt → `jobFinished` scans the tab's output for warnings (`oplog.warnings`: Worktrunk's ▲/✗ marks and `warn:`/`error:` labels, not its echo of hook commands or its approval header), closes the tab on success, and writes the outcome to `ops.log` → toast, apply the display name by branch (`applyCreatedName`), and for ticket worktrees `startTicketAgent` opens the session and calls `cx.agents:start({command = "omp", prompt = …})`. Creation succeeded means `wt` exited 0; hook warnings are only logged.
+**Create.** Form or Carly → `wt.validate` → `launchCreation` opens a background tab running `worktree-operation.sh` and records a job → `trackCreations` (on `tick`) reads the tab's last lines: the newest `◎ Running` step for the row, a question on the last line (Worktrunk's `[y/N]`) or 60 s without output for **Needs you?**; `model` shows the job as a **Creating** row, right away if Worktrunk doesn't list the worktree yet → `checkJobs` reads the receipt → `jobFinished` scans the tab's output for warnings (`oplog.warnings`: Worktrunk's ▲/✗ marks and `warn:`/`error:` labels, not its echo of hook commands or its approval header), closes the tab on success, and writes the outcome to `ops.log` → toast, apply the display name by branch (`applyCreatedName`), and for ticket worktrees `startTicketAgent` opens the session and calls `cx.agents:start({command = "omp", prompt = …})`. Creation succeeded means `wt` exited 0; hook warnings are only logged.
 
-**Delete.** `beginRemoval`: `wt.validate_removal` (repository identity, branch) while the row shows **checking** → clean: removal job right away. Dirty: `wt.local_changes` (`git status --porcelain=v1 -z --no-renames` plus `git diff HEAD --numstat`, first 200 entries) fills the confirmation; **Force delete** reruns `beginRemoval` with `force`, and the helper runs in `force-remove` mode (`wt remove --force`, no cleanliness check). Either way: removal job in a background tab → receipt → close the worktree's session only if the directory is gone, then drop its name, binding and Ice Box entry. Cancelling during a check never starts a deletion (`removalChecks`).
+**Delete.** `beginRemoval`: `wt.validate_removal` (repository identity, branch) while the row shows **Checking** → clean: removal job right away. Dirty: `wt.local_changes` (`git status --porcelain=v1 -z --no-renames` plus `git diff HEAD --numstat`, first 200 entries) fills the confirmation; **Force delete** reruns `beginRemoval` with `force`, and the helper runs in `force-remove` mode (`wt remove --force`, no cleanliness check). Either way: removal job in a background tab → receipt → close the worktree's session only if the directory is gone, then drop its name, binding and Ice Box entry. Cancelling during a check never starts a deletion (`removalChecks`).
 
 **Agent status.** `agentActivity` reads `cx.agents:list()`: `state == "waiting_input"` → waiting, `"working"` → working, otherwise the pane's `agents-finished` mark (done or failed). An `agent_finished` event with result `done` or `failed` sets that mark unless the agent's tab is shown; `agent_state` back to working or waiting clears it, and `markSeen` (after every `follow`) clears marks whose tab is shown or whose pane is gone. For agent CLIs in plain terminals (`omp`, `pi`, `claude`, `codex`, `opencode`, `gemini`, `aider`, `amp`, `cursor-agent`, `crush`, `goose`) it uses the pane's `busy` flag (working only). Per session and tab the state that most needs you wins: waiting, then failed, then done, then working.
 
@@ -126,7 +126,7 @@ What the user sees, precisely. README.md summarizes this; when behavior changes,
 1. **Show Projects:** <kbd>⌘</kbd><kbd>⌥</kbd><kbd>⇧</kbd><kbd>P</kbd>, or **Show or hide Projects** in the command palette. Press it again while the panel has focus to hide it.
 2. **Add a repo:** **+** in the panel's header opens the folder picker.
 3. **Open a worktree:** click its row. Its session opens, and the panel comes with it.
-4. **New worktree:** **+** next to a project. Type a branch name and, if you like, a display name. The row appears straight away as **creating** and becomes a normal row when setup is done.
+4. **New worktree:** **+** next to a project. Type a branch name and, if you like, a display name. The row appears straight away as **Creating** and becomes a normal row when setup is done.
 5. **Everything else is a right-click away** (see [the menus](#the-menus)).
 
 The panel stays on the left of whichever tab you're looking at, across every session, and keeps the width you give it. Each project is a local Git repository, each worktree is a row, and the worktree's open tabs are listed under it. Click a tab row to jump to that tab; hover a worktree row for its branch, path, line counts, ahead/behind and PR.
@@ -134,21 +134,21 @@ The panel stays on the left of whichever tab you're looking at, across every ses
 | You see | It means |
 |---|---|
 | ● green | A session is open |
-| ● green, pulsing | An agent is working |
-| **?** yellow | An agent is waiting for your answer |
-| **✔** green · **!** red | An agent finished · failed while you were elsewhere (clears when you open its tab) |
+| ● pulsing green · amber · red | An agent is working · setup is creating the worktree · it's being deleted |
+| ? in an amber circle | An agent is waiting for your answer |
+| ✓ in a green circle · ! in a red one | An agent finished · failed while you were elsewhere (clears when you open its tab) |
 | ○ hollow | No session yet; click to open one |
 | **✱** amber | Uncommitted changes |
-| **conflicts** | A merge or rebase is stuck |
-| **creating** | Setup is running; the row says how long and which step |
-| **needs you?** | Setup is asking a question, or has printed nothing for a minute; click to see it |
+| **Conflicts** | A merge or rebase is stuck |
+| **Creating** | Setup is running; the row says how long and which step |
+| **Needs you?** | Setup is asking a question, or has printed nothing for a minute; click to see it |
 | **▾ 3** | Three sub-worktrees; click to fold them |
 | **2 new** | Overseer messages for this worktree's agent since you last looked |
-| **worktree gone** | Removed outside Overseer; its session is still open |
+| **Worktree gone** | Removed outside Overseer; its session is still open |
 | Linear logo · PR icon | The ticket the branch names (`feat/ENG-123-…`) · the PR's state |
 | 🧊 | Parked in the Ice Box |
-| **done** · **failed** on a tab | That tab's agent turn ended while you were elsewhere |
-| **overseer** on a tab | The session Overseer's [coordination](#coordination) messages go to (coordination on) |
+| **Done** · **Failed** on a tab | That tab's agent turn ended while you were elsewhere |
+| **Overseer** on a tab | The session Overseer's [coordination](#coordination) messages go to (coordination on) |
 
 Tab names leave out what the row already says: a GitHub pull request tab reads `#123 <title>`, without its author and repository. Hover a tab for its full name.
 
@@ -172,7 +172,7 @@ Tab names leave out what the row already says: a GitHub pull request tab reads `
 
 On a tab, **Make overseer session** picks which of a worktree's agents gets Overseer's messages.
 
-A worktree removed outside Overseer (`wt remove`, `wt merge`, `git worktree remove`) shows as **worktree gone** while its session is still open, so you can read what its agent last said. Its menu offers only **Close session**.
+A worktree removed outside Overseer (`wt remove`, `wt merge`, `git worktree remove`) shows as **Worktree gone** while its session is still open, so you can read what its agent last said. Its menu offers only **Close session**.
 
 ### Start work from a ticket
 
@@ -254,7 +254,7 @@ They load in omp sessions started after the link (`/new` restarts one); `omp plu
 
 ### Troubleshooting
 
-- **A new worktree seems stuck.** Its row says what setup is doing. **needs you?** means setup is asking a question, often a Worktrunk hook approval, or has printed nothing for a minute. Click the row to open its setup tab.
+- **A new worktree seems stuck.** Its row says what setup is doing. **Needs you?** means setup is asking a question, often a Worktrunk hook approval, or has printed nothing for a minute. Click the row to open its setup tab.
 - **What did Overseer just do?** **Show Overseer's operation log** in the command palette lists every creation, deletion, brief and coordination message, with when it happened, how long it took and how it ended. The same entries are in Tern's log (`~/Library/Logs/Tern/tern.log`; search for `Overseer:`).
 - **The panel froze for a few seconds.** Tern pauses a plugin's timers when one of its callbacks runs too long (5 s, doubling on repeats). Overseer logs `Tern paused its … hook`, keeps the panel following you and finishes jobs from a second clock meanwhile, and catches up when the pause ends. A draw that comes close logs `slow draw` with where its time went.
 - **A creation or deletion seems stuck after its tab says it's done.** Overseer restarts its tick when it's more than 5 s late; each restart shows in the operation log as `tick restarted`, with how long it had stopped.
@@ -322,5 +322,5 @@ Other conventions:
 - Coordination runs on one machine: the mailbox and notes live in the repository's Git directory. Overseer's wake-ups and briefs reach any agent CLI; the family summary, notes and agent-to-agent messages need omp.
 - Agents' messages don't wait for an answer; a reply arrives later as a new message.
 - Only a worktree's overseer session is wired to its parent: another agent in the same sub-worktree that gets stuck doesn't wake the parent, though an omp one's notes still reach the family.
-- **needs you?** is read from the setup tab's output, so a setup step that prints nothing for a minute trips it too.
+- **Needs you?** is read from the setup tab's output, so a setup step that prints nothing for a minute trips it too.
 - The worktree rule fires at most once per omp session; after that the agent relies on the skill it read.

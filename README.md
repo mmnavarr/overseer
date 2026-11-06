@@ -74,13 +74,13 @@ That's it. Tern downloads Overseer into its own plugins folder and loads it; no 
 | You see | It means |
 |---|---|
 | ● green | Session open |
-| ● pulsing | Agent working |
-| **?** yellow | Agent waiting for you |
-| **✔** · **!** | Agent finished · failed while you were away |
+| ● pulsing green · amber · red | Agent working · setup creating the worktree · deleting it |
+| ? in an amber circle | Agent waiting for you |
+| ✓ in a green · ! in a red circle | Agent finished · failed while you were away |
 | ○ hollow | No session yet |
 | **✱** amber | Uncommitted changes |
 | **▾ 3** | Three sub-worktrees (click to fold) |
-| **creating** | Setup running; **needs you?** if it's asking something |
+| **Creating** | Setup running; **Needs you?** if it's asking something |
 | 🧊 | Parked in the Ice Box |
 | Linear logo · PR icon | The branch's ticket · its PR state |
 

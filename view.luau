@@ -56,21 +56,18 @@ local PR_STATES = {
 	closed = { role = "overseer.prClosed", label = "Closed" },
 }
 
--- How each agent state shows: on the worktree row (a glyph badge, or a dot
--- for working) and on its tab rows (a small dot, plus a label for done and
--- failed; the yellow dot says waiting on its own).
+-- How each agent state shows: on the worktree row (a filled mark, or a
+-- pulsing dot for working) and on its tab rows (a small dot, plus a label for
+-- done and failed; the yellow dot says waiting on its own).
 local AGENT_STATUS = {
-	waiting = {
-		glyph = "?", role = "overseer.statusWaiting", title = "Agent waiting for you",
-		tabRole = "overseer.dotTabWaiting",
-	},
+	waiting = { role = "overseer.statusWaiting", title = "Agent waiting for you", tabRole = "overseer.dotTabWaiting" },
 	failed = {
-		glyph = "!", role = "overseer.statusFailed", title = "Agent failed",
-		tabRole = "overseer.dotTabFailed", label = "failed", labelTone = "error",
+		role = "overseer.statusFailed", title = "Agent failed",
+		tabRole = "overseer.dotTabFailed", label = "Failed", labelTone = "error",
 	},
 	done = {
-		glyph = "✔", role = "overseer.statusDone", title = "Agent finished",
-		tabRole = "overseer.dotTabDone", label = "done", labelTone = "success",
+		role = "overseer.statusDone", title = "Agent finished",
+		tabRole = "overseer.dotTabDone", label = "Done", labelTone = "success",
 	},
 	working = { role = "overseer.dotAgent", title = "Agent working", tabRole = "overseer.dotTabAgent" },
 }
@@ -198,16 +195,14 @@ local function statusMark(worktree)
 	if worktree.iced then
 		return text("status", "🧊", "overseer.iceMark", { title = "In the Ice Box" })
 	elseif worktree.deleting then
-		return ui.el("div", { key = "status", role = "overseer.dotBusy", title = "Deleting" })
+		return ui.el("div", { key = "status", role = "overseer.dotDeleting", title = "Deleting" })
 	elseif worktree.checking then
 		return ui.el("div", { key = "status", role = "overseer.dotBusy", title = "Checking before deletion" })
 	elseif worktree.creating then
-		return ui.el("div", { key = "status", role = "overseer.dotBusy", title = "Creating" })
+		return ui.el("div", { key = "status", role = "overseer.dotCreating", title = "Creating" })
 	elseif AGENT_STATUS[worktree.agent] then
 		local agent = AGENT_STATUS[worktree.agent]
-		return if agent.glyph
-			then text("status", agent.glyph, agent.role, { title = agent.title })
-			else ui.el("div", { key = "status", role = agent.role, title = agent.title })
+		return ui.el("div", { key = "status", role = agent.role, title = agent.title })
 	end
 	return ui.el("div", {
 		key = "status", role = if worktree.session then "overseer.dotOpen" else "overseer.dotIdle",
@@ -240,15 +235,15 @@ local function appendTabs(children, tabs)
 		if agent and agent.label then
 			table.insert(tabChildren, badge("state", agent.label, agent.labelTone))
 		elseif not agent and tab.busy then
-			table.insert(tabChildren, ui.node("text", { key = "busy", basis = "content", spans = { ui.span("running", "warning") } }))
+			table.insert(tabChildren, ui.node("text", { key = "busy", basis = "content", spans = { ui.span("Running", "warning") } }))
 		end
 		-- The session Overseer's messages for this worktree go to.
 		if tab.lead then
-			table.insert(tabChildren, badge("lead", "overseer", "accent",
+			table.insert(tabChildren, badge("lead", "Overseer", "accent",
 				"Overseer session: Overseer's messages for this worktree go here"))
 		end
 		if not tab.pane then
-			table.insert(tabChildren, ui.node("text", { key = "unavailable", basis = "content", spans = { ui.span("no pane", "muted") } }))
+			table.insert(tabChildren, ui.node("text", { key = "unavailable", basis = "content", spans = { ui.span("No pane", "muted") } }))
 		end
 		table.insert(children, ui.node("row", {
 			key = "tab" .. string.format("%d", tab.id), role = "overseer.tabRow",
@@ -277,7 +272,7 @@ local function goneNode(worktree, activePath)
 			statusMark(worktree),
 			text("branch", worktree.label, "overseer.branch"),
 			ui.node("row", { key = "spacer", grow = 1 }, {}),
-			badge("gone", "worktree gone", "warning"),
+			badge("gone", "Worktree gone", "warning"),
 		}),
 		text("subtitle", basename(worktree.path), "overseer.worktreeSubtitle"),
 	})
@@ -386,16 +381,16 @@ local function worktreeNode(worktree, activePath)
 	-- Pushes the remaining badges to the row's right edge.
 	table.insert(head, ui.node("row", { key = "spacer", grow = 1 }, {}))
 	if worktree.conflicts then
-		table.insert(head, badge("conflicts", "conflicts", "error", "Merge conflicts"))
+		table.insert(head, badge("conflicts", "Conflicts", "error", "Merge conflicts"))
 	end
 	if worktree.creating then
 		local state = worktree.creating
-		table.insert(head, badge("creating", if state.needsYou then "needs you?" else "creating",
+		table.insert(head, badge("creating", if state.needsYou then "Needs you?" else "Creating",
 			if state.needsYou then "error" else "warning", creatingTitle(state)))
 	elseif worktree.deleting then
-		table.insert(head, badge("deleting", "deleting", "warning"))
+		table.insert(head, badge("deleting", "Deleting", "error"))
 	elseif worktree.checking then
-		table.insert(head, badge("checking", "checking", "warning"))
+		table.insert(head, badge("checking", "Checking", "warning"))
 	elseif not worktree.session then
 		table.insert(head, text("open", "Open", "overseer.openHint"))
 	end
