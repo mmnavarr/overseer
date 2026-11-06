@@ -3,7 +3,6 @@ local wt = require("./worktrunk")
 local view = require("./view")
 local visualize = require("./visualize")
 local budget = require("./budget")
-local intercom = require("./intercom")
 local oplog = require("./oplog")
 local omplink = require("./omplink")
 
@@ -27,7 +26,7 @@ local linearDefault
 -- Defined after forms(); openForm starts it.
 local watchForms
 -- Defined with the coordination rails; refreshes call them.
-local railsAfterListing, railsAfterLinks, railsAfterPullRequests
+local railsAfterListing, railsAfterLinks, railsAfterPullRequests, railsAfterSwitch
 -- Defined with the tick; every event checks it.
 local ensureTicking
 
@@ -306,9 +305,9 @@ local function owners(entry)
 	return result
 end
 
--- Coordination rails. Overseer tells a worktree's overseer session (its omp
--- session running the overseer-rails extension, reachable over pi-intercom at
--- its omp session id) what happens in its family of sub-worktrees.
+-- Coordination rails (opt-in per repository; see wt.coordination). Overseer
+-- tells a worktree's overseer session (an agent in one of its tabs) what
+-- happens in its family of sub-worktrees, handing it over with cx.agents:ask.
 -- Kept in kv "rails", keyed by worktree path unless noted; times are os.time()
 -- seconds, so they survive restarts:
 --   queue    messages waiting for the worktree's overseer session or the rate limit
@@ -408,10 +407,13 @@ local function model(cx)
 	local current = cx.sessions:current()
 	for _, project in projects() do
 		local entry = cache[project.id]
+		-- Agent coordination is opt-in per repository; off, none of its marks show.
+		local coordinating = entry ~= nil and entry.coordination == true
 		local row = {
 			id = project.id, name = project.name, path = project.path, base = project.base,
 			loading = not entry or entry.loading, error = entry and entry.error, worktrees = {}, hiddenIced = 0,
 			total = entry and entry.worktrees and #entry.worktrees or 0,
+			coordination = coordinating, coordinationKnown = entry ~= nil and entry.coordination ~= nil,
 		}
 		local ownerOf = owners(entry)
 		local items, byPath = {}, {}
@@ -429,7 +431,8 @@ local function model(cx)
 			item.active = session ~= nil and session.id == current.id
 			if item.active then result.activePath = worktree.path end
 			item.iced = not worktree.is_main and icebox[project.id] ~= nil and icebox[project.id][worktree.path] == true
-			item.lead = leadOf(entry, worktree, agents)
+			item.coordination = coordinating
+			item.lead = if coordinating then leadOf(entry, worktree, agents) else nil
 			item.agentCount = #(agents[worktree.path] or {})
 			-- Worktrunk lists a new worktree as soon as its directory exists, while
 			-- its setup may still be running.
@@ -439,7 +442,7 @@ local function model(cx)
 			if item.active and rails.unread[worktree.path] then
 				rails.unread[worktree.path], seen = nil, true
 			end
-			item.unread = rails.unread[worktree.path]
+			item.unread = if coordinating then rails.unread[worktree.path] else nil
 			table.insert(items, item)
 			byPath[worktree.path] = item
 		end
@@ -453,7 +456,7 @@ local function model(cx)
 				if item.active then owner.activeChild = true end
 				local checkin = rails.checkin[item.path]
 				-- Wall-clock seconds only (values from before that change are ignored).
-				item.checkin = if type(checkin) == "number" and checkin > 1e9 then ago(checkin) else nil
+				item.checkin = if coordinating and type(checkin) == "number" and checkin > 1e9 then ago(checkin) else nil
 			end
 		end
 		-- The overseer badge marks where Overseer's messages for a family land:
@@ -463,7 +466,7 @@ local function model(cx)
 		for _, item in items do
 			for _, tab in item.tabs do
 				tab.lead = item.lead ~= nil and tab.agentPane == item.lead and item.family ~= nil
-				tab.canLead = tab.agentPane ~= nil and tab.agentPane ~= item.lead and item.agentCount > 1
+				tab.canLead = coordinating and tab.agentPane ~= nil and tab.agentPane ~= item.lead and item.agentCount > 1
 			end
 		end
 		if seen then tern.kv.set("rails", rails) end
@@ -661,22 +664,32 @@ local function refreshPullRequests(project, entry)
 	end)
 end
 
--- Sub-worktree links (`overseer-parent`) and overseer sessions
--- (`overseer-lead`), read beside each listing. A failed read keeps the last
--- links, so rows don't jump out of their parents.
+-- Sub-worktree links (`overseer-parent`), overseer sessions (`overseer-lead`)
+-- and whether agent coordination is on, read beside each listing. A failed
+-- read keeps the last values, so rows don't jump out of their parents.
 local function refreshLinks(project, entry)
 	if entry.linksLoading then return end
 	entry.linksLoading = true
 	wt.links(project, function(found, err, cx)
-		entry.linksLoading = false
 		if found then
 			entry.parents, entry.leads, entry.linksError = found.parents, found.leads, nil
 		elseif err ~= entry.linksError then
 			entry.linksError = err
 			tern.log.warn("Sub-worktree links unavailable for " .. project.name .. ": " .. tostring(err))
 		end
-		if cx then redraw(cx) end
-		if found and cx then railsAfterLinks(cx, project, entry) end
+		wt.coordination(project, function(on, switchErr, nextCx)
+			entry.linksLoading = false
+			if on ~= nil then
+				entry.coordination = on
+			else
+				tern.log.warn("Overseer: couldn't read agent coordination for " .. project.name .. ": " .. tostring(switchErr))
+			end
+			if nextCx then
+				redraw(nextCx)
+				if on ~= nil then railsAfterSwitch(nextCx, project, entry) end
+				if found then railsAfterLinks(nextCx, project, entry) end
+			end
+		end)
 	end)
 end
 
@@ -1069,10 +1082,18 @@ local function ownerTree(entry, worktree)
 	return nil
 end
 
--- Sends what waits in the queues to the worktrees' overseer sessions.
+-- Whether agent coordination is on for a project's repository. Unknown (not
+-- read yet) counts as off.
+local function coordinating(project)
+	local entry = project and cache[project.id]
+	return entry ~= nil and entry.coordination == true
+end
+
+-- Sends what waits in the queues to the worktrees' overseer sessions. Tern
+-- hands each message to the agent as a prompt, queued until it can take one.
 local function flushRails(cx)
 	local rails = railsState()
-	local changed = false
+	local changed, delivered = false, false
 	-- Rate-limit marks only matter for RAILS_RATE_S; panes come and go.
 	for pane, at in rails.sentAt do
 		if type(at) ~= "number" or os.time() - at >= RAILS_RATE_S then rails.sentAt[pane], changed = nil, true end
@@ -1089,6 +1110,9 @@ local function flushRails(cx)
 		for _, item in queue do now = now or item.now == true end
 		if not project and not tern.fs.exists(path) then
 			rails.queue[path], changed = nil, true
+		elseif project and cache[project.id].coordination == false then
+			-- Coordination was turned off: what was waiting goes too.
+			rails.queue[path], changed = nil, true
 		elseif pane and (now or os.time() - (rails.sentAt[paneKey(pane)] or 0) >= RAILS_RATE_S) then
 			rails.queue[path], changed = nil, true
 			rails.sentAt[paneKey(pane)] = os.time()
@@ -1098,35 +1122,32 @@ local function flushRails(cx)
 				attempts = math.max(attempts, item.attempts or 0)
 			end
 			local text = if #texts == 1 then texts[1] else "Overseer: " .. #texts .. " updates.\n\n" .. table.concat(texts, "\n\n")
-			intercom.send(cx:window_key(), pane, text, function(ok, err, nextCx)
-				local after = railsState()
-				if ok then
-					after.unread[path] = (after.unread[path] or 0) + 1
-					oplog.write("info", { op = "relay", event = "delivered", path = path,
-						detail = tostring(#texts) .. " message" .. (if #texts == 1 then "" else "s") })
-				else
-					oplog.write("warn", { op = "relay", event = "failed", path = path,
-						detail = tostring(err) .. (if attempts + 1 < RAILS_ATTEMPTS then "; will retry" else "; gave up") })
-					if attempts + 1 < RAILS_ATTEMPTS then
-						local back = after.queue[path] or {}
-						for index, item in queue do
-							item.attempts = attempts + 1
-							table.insert(back, index, item)
-						end
-						after.queue[path] = back
-					end
+			local ok, err = pcall(function() cx.agents:ask(pane, text) end)
+			if ok then
+				rails.unread[path] = (rails.unread[path] or 0) + 1
+				delivered = true
+				oplog.write("info", { op = "relay", event = "delivered", path = path,
+					detail = tostring(#texts) .. " message" .. (if #texts == 1 then "" else "s") })
+			else
+				oplog.write("warn", { op = "relay", event = "failed", path = path,
+					detail = tostring(err) .. (if attempts + 1 < RAILS_ATTEMPTS then "; will retry" else "; gave up") })
+				if attempts + 1 < RAILS_ATTEMPTS then
+					for _, item in queue do item.attempts = attempts + 1 end
+					rails.queue[path] = queue
 				end
-				tern.kv.set("rails", after)
-				if nextCx then redraw(nextCx) end
-			end)
+			end
 		end
 	end
 	if changed then tern.kv.set("rails", rails) end
+	if delivered then redraw(cx) end
 end
 
 -- Queues `text` for the overseer session of the worktree at `path`; it goes
 -- out once the worktree has one and the rate limit allows (`now` skips the wait).
+-- Nothing is queued for a repository with coordination off.
 local function tell(cx, path, text, now)
+	local project = findWorktree(path)
+	if project and not coordinating(project) then return end
 	local rails = railsState()
 	local queue = rails.queue[path] or {}
 	table.insert(queue, { text = text, at = os.time(), now = now or nil })
@@ -1140,7 +1161,7 @@ end
 -- stopped is cleared, and a worktree with one running agent gets it as lead.
 -- With several and no lead, you pick one (Make overseer session).
 local function syncLeads(cx, project, entry)
-	if not entry.leads or not entry.worktrees then return end
+	if entry.coordination ~= true or not entry.leads or not entry.worktrees then return end
 	local agents = worktreeAgents(cx)
 	entry.leadWrites = entry.leadWrites or {}
 	for _, worktree in entry.worktrees do
@@ -1214,7 +1235,7 @@ local function onAgentChange(cx, pane, kind)
 			end
 		end
 	end
-	if not project then return end
+	if not project or not coordinating(project) then return end
 	local rails = railsState()
 	local told = rails.told[worktree.path] or {}
 	if kind == "working" then
@@ -1230,7 +1251,7 @@ local function onAgentChange(cx, pane, kind)
 	if owner and kind == "waiting" and not told.waiting then
 		told.waiting = true
 		text = string.format(
-			"Overseer: sub-worktree %s is waiting for an answer.%s\nAnswer with the overseer_family tool (to: \"%s\"), or intercom with the address it lists.",
+			"Overseer: sub-worktree %s is waiting for an answer.%s\nAnswer with the overseer_family tool (action \"message\", to \"%s\").",
 			treeLabel(project, worktree), quoted, worktree.branch)
 	elseif owner and kind == "failed" and not told.failed then
 		told.failed = true
@@ -1295,8 +1316,9 @@ local function startBrief(cx, project, worktree, file)
 		return
 	end
 	-- Move it first, so the next refresh can't start it twice.
+	local reportBack = if coordinating(project) then ": report back with the overseer_family tool (to: parent).\n" else ".\n"
 	tern.fs.write(started, brief .. "\n\n---\nOverseer started this session from the brief your parent worktree left. "
-		.. "This worktree (" .. worktree.branch .. ") is its sub-worktree: report back with the overseer_family tool (to: parent).\n")
+		.. "This worktree (" .. worktree.branch .. ") is its sub-worktree" .. reportBack)
 	tern.fs.remove(file)
 	local ternBin = wt.find_executable("tern") or "/Applications/Tern.app/Contents/MacOS/tern"
 	local session = boundSession(worktree.path, sessionsById(cx))
@@ -1355,6 +1377,7 @@ end
 local function makeLead(cx, path, tabId)
 	local project, worktree = findWorktree(path)
 	if not project or not worktree.branch then report(cx, "Worktree not found. Refresh Projects."); return end
+	if not coordinating(project) then report(cx, "Turn on agent coordination for this repository first.", "Agent coordination is off"); return end
 	local pane = nil
 	for _, agent in (worktreeAgents(cx)[path] or {}) do
 		local info = cx.session:pane(agent.pane)
@@ -1375,6 +1398,7 @@ end
 local function briefChildren(cx, path, message)
 	local project, worktree = findWorktree(path)
 	if not project then return nil, "Worktree is no longer available. Refresh Projects." end
+	if not coordinating(project) then return nil, "Agent coordination is off for this repository. Turn it on from the project's menu." end
 	local entry = cache[project.id]
 	local ownerOf, sent = owners(entry), 0
 	for _, tree in entry.worktrees do
@@ -1388,10 +1412,99 @@ local function briefChildren(cx, path, message)
 	return sent
 end
 
+-- Messages agents leave for their relatives (the overseer_family tool): one
+-- JSON file per message in <repository git dir>/overseer/outbox/, delivered
+-- to the recipient worktree's overseer session and then removed. Only for
+-- repositories with coordination on; until it's on, files stay put.
+local MAIL_MAX_BYTES = 16384
+
+local function deliverMail(cx)
+	for _, project in projects() do
+		local entry = cache[project.id]
+		if coordinating(project) and entry.worktrees and #entry.worktrees > 0 then
+			local dir = project.id .. "/overseer/outbox"
+			local listed, names = pcall(tern.fs.list, dir)
+			for _, name in (if listed then names else {}) do
+				if string.sub(name, -5) == ".json" then
+					local file = dir .. "/" .. name
+					local read, text = pcall(tern.fs.read, file, MAIL_MAX_BYTES)
+					local decoded, mail = false, nil
+					if read then decoded, mail = pcall(tern.json.decode, text) end
+					local valid = decoded and type(mail) == "table" and type(mail.to) == "string"
+						and type(mail.text) == "string" and string.find(mail.text, "%S") ~= nil
+						and type(mail.from) == "table" and type(mail.from.branch) == "string"
+					if not valid then
+						oplog.write("warn", { op = "message", event = "unreadable", project = project.name, detail = name })
+					else
+						local ownerOf, target, sender = owners(entry), nil, nil
+						for _, tree in entry.worktrees do
+							if tree.branch == mail.to then target = tree end
+							if tree.branch == mail.from.branch then sender = tree end
+						end
+						if target then
+							local relation = if sender and ownerOf[target.path] == sender.path then "parent"
+								elseif sender and ownerOf[sender.path] == target.path then "sub-worktree"
+								else "relative"
+							oplog.write("info", { op = "message", event = "queued", project = project.name, branch = mail.to,
+								detail = "from " .. mail.from.branch })
+							tell(cx, target.path, string.format(
+								"Overseer: message from the overseer session of %s (your %s):\n\n%s\n\n(Reply with the overseer_family tool: action \"message\", to \"%s\".)",
+								mail.from.branch, relation, mail.text, mail.from.branch), true)
+						else
+							oplog.write("warn", { op = "message", event = "undeliverable", project = project.name, branch = mail.to,
+								detail = "from " .. mail.from.branch .. ": no worktree on that branch" })
+						end
+					end
+					pcall(tern.fs.remove, file)
+				end
+			end
+		end
+	end
+end
+
+-- 2.4.0 made coordination opt-in. Once per repository, a project that already
+-- used it (an overseer session on record, or relays in Overseer's state) keeps
+-- it on; every other project starts off.
+function railsAfterSwitch(cx, project, entry)
+	local migrated = records("coordination-migrated")
+	if migrated[project.id] or entry.migrating then return end
+	-- Judge only with the listing and the links in.
+	if not entry.worktrees or #entry.worktrees == 0 or not entry.leads then return end
+	local used = entry.coordination == true or next(entry.leads) ~= nil
+	if not used then
+		local rails = railsState()
+		for _, worktree in entry.worktrees do
+			for _, key in { "queue", "unread", "checkin", "told" } do
+				if rails[key][worktree.path] ~= nil then used = true end
+			end
+		end
+	end
+	local function done()
+		local latest = records("coordination-migrated")
+		latest[project.id] = true
+		tern.kv.set("coordination-migrated", latest)
+	end
+	if entry.coordination == true or not used then done(); return end
+	entry.migrating = true
+	wt.set_coordination(project, true, function(ok, err, nextCx)
+		entry.migrating = nil
+		if not ok then
+			tern.log.warn("Overseer: couldn't keep agent coordination on for " .. project.name .. ": " .. tostring(err))
+			return
+		end
+		entry.coordination = true
+		done()
+		oplog.write("info", { op = "coordination", event = "on", project = project.name,
+			detail = "kept on: this repository used it before coordination became opt-in" })
+		if nextCx then redraw(nextCx) end
+	end)
+end
+
 function railsAfterListing(cx, project, entry, previous)
 	noticeMoves(project, entry, previous)
 	startBriefs(cx, project, entry)
 	syncLeads(cx, project, entry)
+	if entry.coordination ~= nil then railsAfterSwitch(cx, project, entry) end
 	flushRails(cx)
 end
 
@@ -1506,6 +1619,33 @@ local function removeProject(cx, request)
 	tern.kv.set("projects", kept)
 	cache[request.project], collapsed[request.project] = nil, nil
 	cx:toast("info", "Project removed", notificationLabel(request.label))
+	redraw(cx)
+end
+
+-- Agent coordination, from the project's menu. Turning it on asks first.
+local function setCoordination(cx, id, on)
+	local project = projectById(id)
+	if not project then report(cx, "Project not found. Refresh Projects."); return end
+	wt.set_coordination(project, on, function(ok, err, nextCx)
+		if not nextCx then return end
+		if not ok then report(nextCx, err, "Couldn't change agent coordination"); return end
+		local entry = cache[project.id]
+		if entry then entry.coordination = on end
+		-- A choice made by hand settles the opt-in migration for this repository.
+		local migrated = records("coordination-migrated")
+		migrated[project.id] = true
+		tern.kv.set("coordination-migrated", migrated)
+		oplog.write("info", { op = "coordination", event = if on then "on" else "off", project = project.name })
+		nextCx:toast("info", if on then "Agent coordination on" else "Agent coordination off", notificationLabel(project.name))
+		if on and entry then railsAfterLinks(nextCx, project, entry) else flushRails(nextCx) end
+		redraw(nextCx)
+	end)
+end
+
+local function requestCoordination(cx, id)
+	local project = projectById(id)
+	if not project then report(cx, "Project not found. Refresh Projects."); return end
+	confirmation = { id = token(), kind = "coordination-on", path = project.path, label = project.name, project = project.id }
 	redraw(cx)
 end
 
@@ -1674,6 +1814,12 @@ local function confirmWorktreeAction(cx, id, all)
 	local request = confirmation
 	if not request or request.id ~= id or request.checking then return end
 	if request.kind == "remove-project" then removeProject(cx, request); return end
+	if request.kind == "coordination-on" then
+		confirmation = nil
+		setCoordination(cx, request.project, true)
+		redraw(cx)
+		return
+	end
 	if request.kind == "delete-family" then deleteFamily(cx, request, all == true); return end
 	request.checking = true
 	beginRemoval(cx, request)
@@ -2478,6 +2624,10 @@ local function canvasAction(ev, cx)
 		else report(cx, "Project not found. Refresh Projects.") end
 	elseif ev.act == "remove-project" then
 		requestProjectRemoval(cx, view.projectId(ev.node))
+	elseif ev.act == "coordination-on" then
+		requestCoordination(cx, view.projectId(ev.node))
+	elseif ev.act == "coordination-off" then
+		setCoordination(cx, view.projectId(ev.node), false)
 	elseif ev.act == "visualize" then
 		visualizePr(cx, view.worktreePath(ev.node))
 	elseif ev.act == "make-lead" then
@@ -2514,7 +2664,7 @@ for _, act in {
 	"help", "add", "refresh", "collapse", "create", "open-worktree", "link", "icebox-add", "icebox-remove",
 	"toggle-icebox", "change-base", "set-linear", "remove-project", "visualize", "rename",
 	"close-session", "delete-worktree", "confirm", "confirm-all", "cancel", "tab", "fold", "move-under", "make-top-level",
-	"make-lead", "brief-children",
+	"make-lead", "brief-children", "coordination-on", "coordination-off",
 } do CANVAS_ACTIONS[act] = true end
 
 -- Clicks only queue their work: an overrun here would pause the hook and
@@ -2608,6 +2758,7 @@ tick = function(generation, cx)
 		lastRefresh = tern.now()
 		separately("refresh", refresh)
 	end
+	separately("mail", deliverMail)
 	separately("rails", flushRails)
 	-- Events draw at once; the tick only for its clocks, every few seconds.
 	local clocks = tern.now() - lastTickDraw >= TICK_DRAW_MS

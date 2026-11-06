@@ -93,8 +93,9 @@ prefer recreating it with the commands above when it has no work yet.
 
 ## Staying in touch
 
-Sessions in the family see each other's news before each prompt (new commits,
+When agent coordination is on for the repository (Overseer's project menu),
+sessions in the family see each other's news before each prompt (new commits,
 files you both edit, their latest note). The `overseer_family` tool lists the
-family with intercom addresses and messages them; use intercom `ask` with an
-address when you need an answer before continuing. Overseer also tells the
+family and sends them messages, which Overseer delivers; it doesn't wait for
+a reply, and an answer arrives later as a new message. Overseer also tells the
 parent when a sub-worktree's session is waiting, failed, or finished with a PR.

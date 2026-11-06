@@ -431,6 +431,32 @@ function M.set_var(project, branch, key, value, done)
 	end)
 end
 
+-- Agent coordination is opt-in per repository: `overseer.coordination` in the
+-- repository's shared git config, which the omp extension reads too.
+local COORDINATION_KEY = "overseer.coordination"
+
+-- done(true | false, err, cx): whether coordination is on. Read-only.
+function M.coordination(project, done)
+	git(project.path, { "config", "--bool", "--get", COORDINATION_KEY }, function(result, err, cx)
+		if not result then done(nil, err, cx)
+		elseif result.status == 0 then done(output_line(result.stdout) == "true", nil, cx)
+		elseif result.status == 1 then done(false, nil, cx)
+		else done(nil, command_error("Cannot read " .. COORDINATION_KEY, result), cx) end
+	end)
+end
+
+-- Turns coordination on or off for the repository. done(true, err, cx)
+function M.set_coordination(project, on, done)
+	local args = if on then { "config", "--local", COORDINATION_KEY, "true" }
+		else { "config", "--local", "--unset", COORDINATION_KEY }
+	git(project.path, args, function(result, err, cx)
+		if not result then done(nil, err, cx)
+		-- Unsetting a key that isn't set (status 5) leaves it off, as asked.
+		elseif result.status == 0 or (not on and result.status == 5) then done(true, nil, cx)
+		else done(nil, command_error("Cannot save " .. COORDINATION_KEY, result), cx) end
+	end)
+end
+
 -- done(true | false, err, cx): whether commit `ancestor` is in `ref`'s history. Read-only.
 function M.is_ancestor(project, ancestor, ref, done)
 	git(project.path, { "merge-base", "--is-ancestor", ancestor, ref }, function(result, err, cx)

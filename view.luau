@@ -88,6 +88,11 @@ local CONFIRMATIONS = {
 		icon = "folder-minus", tone = "accent", variant = "primary",
 		detail = "Stops showing this repository in Projects. Keeps the repository, its worktrees, branches and open sessions. Adding it again restores its names and Ice Box.",
 	},
+	["coordination-on"] = {
+		title = "Turn on agent coordination?", confirm = "Turn on", keep = "Not now",
+		icon = "message", tone = "accent", variant = "primary",
+		detail = "The agents of a task and its sub-worktrees stay in touch: Overseer wakes the task's agent when a sub-worktree's agent needs an answer, fails or opens a pull request, tells sub-worktrees when their parent's branch moves, and passes on messages agents send each other. omp agents also get a short summary of their relatives' news before each prompt. Messages only inform; nothing acts on them. Turn it off from this menu at any time.",
+	},
 	-- A worktree with sub-worktrees: delete it alone (they move to the top
 	-- level) or with them. Either way it then gets its own clean/dirty check.
 	["delete-family"] = {
@@ -318,7 +323,7 @@ local function worktreeMenu(worktree)
 	local menu = {}
 	if worktree.pr then table.insert(menu, { id = "visualize", label = "Visualize PR", icon = "merge" }) end
 	table.insert(menu, { id = "rename", label = "Rename…", icon = "pen" })
-	if worktree.children then
+	if worktree.children and worktree.coordination then
 		table.insert(menu, { id = "brief-children", label = "Brief sub-worktrees…", icon = "message" })
 	end
 	if not worktree.is_main then
@@ -479,15 +484,21 @@ end
 
 local function projectNode(model, project)
 	local collapsed = model.collapsed and model.collapsed[project.id]
+	local menu = {
+		{ id = "change-base", label = "Change base branch…", icon = "branch" },
+		{ id = "set-linear", label = "Set Linear workspace…", icon = "link" },
+	}
+	if project.coordinationKnown then
+		table.insert(menu, if project.coordination
+			then { id = "coordination-off", label = "Turn off agent coordination", icon = "message" }
+			else { id = "coordination-on", label = "Turn on agent coordination…", icon = "message" })
+	end
+	table.insert(menu, "-")
+	table.insert(menu, { id = "remove-project", label = "Remove project…", icon = "folder-minus" })
 	local children = {
 		ui.node("row", {
 			key = "header", role = "overseer.projectHeader",
-			actions = { menu = {
-				{ id = "change-base", label = "Change base branch…", icon = "branch" },
-				{ id = "set-linear", label = "Set Linear workspace…", icon = "link" },
-				"-",
-				{ id = "remove-project", label = "Remove project…", icon = "folder-minus" },
-			} },
+			actions = { menu = menu },
 		}, {
 			ui.node("row", {
 				key = "collapse", role = "overseer.projectToggle",
