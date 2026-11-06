@@ -70,7 +70,7 @@ With omp installed, Overseer sets up its omp side by itself.
 </tr>
 </table>
 
-<img src="docs/images/context-menu.png" alt="Right-click menu on a worktree" width="420">
+<img src="docs/images/context-menu.png" alt="Right-click menu on a worktree" width="456">
 
 ### Start work from a ticket
 
