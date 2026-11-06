@@ -11,7 +11,7 @@ Overseer is a Tern plugin written in Luau. `plugin.toml` declares two entry poin
 - `host.luau` runs in Tern's host and renders the `overseer.form` block, the native form used for New worktree, Rename, Change base branch and Set Linear workspace. `input.luau` is its Unicode-aware text editing.
 - `window.luau` runs once per Tern window. It owns the Projects panel (a canvas that follows you between tabs), event hooks, the background job tracker, coordination relays, the operation log, the Carly export, and Visualize PR canvases.
 
-Three pieces run inside omp, not Tern, and share only Git config and pi-intercom with the plugin. They make up `omp/`, the omp plugin package `overseer-omp`: `omp/overseer-rails/index.ts` (a TypeScript omp extension, run by Bun, declared in `omp/package.json`), `omp/rules/overseer-worktrees.md` (an omp TTSR rule) and `omp/skills/overseer-subworktree/` (a skill whose script is plain Bash). `omplink.luau` links the package into omp on every load (`omp plugin link`), so agents reach the script at the stable `~/.omp/plugins/node_modules/overseer-omp/skills/overseer-subworktree/overseer-subworktree` wherever Tern installed the plugin. It re-links only when the link leads elsewhere, keeps a disabled package disabled, and then removes the old hand-made `~/.omp/agent` symlinks, only those pointing into an Overseer checkout.
+Three pieces run inside omp, not Tern, and share only Git config and files in the repository's Git directory with the plugin. They make up `omp/`, the omp plugin package `overseer-omp`: `omp/overseer-rails/index.ts` (a TypeScript omp extension, declared in `omp/package.json`), `omp/rules/overseer-worktrees.md` (an omp TTSR rule) and `omp/skills/overseer-subworktree/` (a skill whose script is plain Bash). `omplink.luau` links the package into omp on every load (`omp plugin link`), so agents reach the script at the stable `~/.omp/plugins/node_modules/overseer-omp/skills/overseer-subworktree/overseer-subworktree` wherever Tern installed the plugin. It re-links only when the link leads elsewhere, keeps a disabled package disabled, and then removes the old hand-made `~/.omp/agent` symlinks, only those pointing into an Overseer checkout.
 
 Tern APIs are typed in the definitions Tern generates: `/Applications/Tern.app/Contents/MacOS/tern plugin types <dir>` writes `tern.d.luau`. Read it before using an API you haven't used here.
 
@@ -47,9 +47,8 @@ When debugging an overrun, read the log: `exceeded its budget; paused … hook="
 | `omp/package.json` | Makes `omp/` the omp plugin package `overseer-omp`; declares the extension. Keep its `version` in step with `plugin.toml`. |
 | `omp/skills/overseer-subworktree/` | The omp skill and script for creating worktrees: sub-worktrees of the worktree the script runs in (optionally with a brief for their own session), top-level ones otherwise. |
 | `omp/rules/overseer-worktrees.md` | The omp TTSR rule that redirects raw worktree-creating commands to that skill. |
-| `omp/overseer-rails/index.ts` | The omp extension behind [coordination](#coordination): family summary before each prompt, notes on pi-intercom's shared board, the `overseer_family` tool. |
+| `omp/overseer-rails/index.ts` | The omp extension behind [coordination](#coordination): family summary before each prompt, the notes board, the `overseer_family` tool and its mailbox. |
 | `omplink.luau` | Links `omp/` into omp each time the plugin loads, and removes the old hand-made symlinks; logs to the operation log. |
-| `intercom.luau` | Overseer's sender: resolves a pane to its omp session with `tern inspect`, then runs pi-intercom's CLI as `overseer`. |
 | `oplog.luau` | The operation log (`ops.log`), reading an operation's terminal, and spotting a creation's step, questions and warnings in it. |
 | `tests/test_worktree_operation.py`, `tests/test_subworktree.py` | Real Git/Worktrunk tests for the helper and the sub-worktree script. |
 
@@ -68,6 +67,7 @@ Tern's plugin KV (`~/Library/Application Support/Tern/plugin-data/overseer/kv.js
 | `pending-form:<pane>`, `form:<token>` | `{token, mode, project, path?, response?, launched?}`, the form's answer | An open form's request, keyed by its pane, and the answer the form block posts. `forms` moves the answer into the request (`response`) so a reload resumes it. |
 | `agents-finished` | `{[paneId]: "done" \| "failed"}` | Agent turns that ended while their tab wasn't shown. Cleared when the tab is shown, the agent starts again, or the pane closes. |
 | `rails` | `{queue, unread, sentAt, checkin, told}` | Coordination relays; see [Flows](#flows). |
+| `coordination-migrated` | `{[projectId]: true}` | Repositories already settled by the 2.4.0 opt-in migration (or switched by hand), so it runs once each. |
 
 Beside the kv store, `ops.log` in the plugin data directory is the operation log: one JSON line per creation, deletion, brief, relay and gone worktree (start, finish, duration, outcome, first warning), newest last, capped at 256 KB. The **Show Overseer's operation log** command opens it in `less`. The same entries go to Tern's log, at info for routine starts and finishes and warn for failures, warnings and "needs you".
 
@@ -83,10 +83,10 @@ In-memory only: the per-project `cache` (worktrees, PRs, gone paths with open se
 
 **Tick health.** `tick` runs every 750 ms under a generation number and records `lastTick`. `ensureTicking`, called from every event hook and from `processClock` (a `/bin/sleep 5` process whose callback runs in the process hook, outside the timer budget), starts a new generation when the tick is more than 5 s late and Tern hasn't paused the timer hook, logging `tick restarted`. While the tick was late or the timer hook is paused, the process clock also runs `checkJobs(cx, true)` (finishing jobs inline) and `follow`. The tick draws only every 5 s (`followSoon(quiet)`); events draw at once. `snapshot(cx)` fetches panes, tabs and agents once per callback for `model`.
 
-**Coordination.** Three parts, one shared vocabulary (the `overseer-parent`/`overseer-lead` branch variables and pi-intercom):
+**Coordination.** Opt-in per repository: `overseer.coordination=true` in the repository's shared Git config (`wt.coordination` / `wt.set_coordination`, read beside the links on every refresh into `entry.coordination`). Off, Overseer queues and delivers nothing, drops what was queued, hides **Brief sub-worktrees…**, **Make overseer session**, **N new**, check-ins and the **overseer** badge, and the extension stays silent. Turning it on goes through a confirmation card; turning it off doesn't. In 2.4.0, `railsAfterSwitch` keeps it on, once per repository (kv `coordination-migrated`), where coordination was in use before it became opt-in (an `overseer-lead` var or `rails` records for one of its worktrees). Three parts, one shared vocabulary (the `overseer-parent`/`overseer-lead` branch variables and `<git-common-dir>/overseer/`):
 
-- *The omp extension* (`omp/overseer-rails/index.ts`) runs in each interactive omp session in a Tern pane (subagents and the advisor are headless and skip it). `before_agent_start` reads the family from git config (`worktrunk.state.<branch>.vars.*`, milliseconds where `wt` takes ~0.4 s), diffs each relative's branch tip against what this session last saw (kept as `overseer-rails.seen` session entries, so it survives resume), adds the latest note from the board, and flags files both branches change against `origin/HEAD`. Notes live in pi-intercom's extension state `overseer-rails/v1` (newest 80, well under its 64 KiB limit; the elected owner commits, others publish to it). `overseer_family` resolves a relative's lead pane to its intercom address with `tern inspect --json` (the pane's `omp_session_file` names the omp session id, which is pi-intercom's default address) and sends through pi-intercom's outbox.
-- *Overseer's relays* (`window.luau`, "Coordination rails"): `onAgentChange` (from `agent_state`/`agent_finished`) records check-ins and relays a sub-worktree's lead going waiting or failed, and remembers a finished turn so `noticeFinished` relays it once its PR is known (once per PR and head commit, within 15 minutes). `noticeMoves` compares each listing's head commits with the last: a parent that moved notifies children containing its old tip when that tip isn't on the base branch. `tell` queues per worktree; `flushRails` sends to the worktree's lead (`leadOf`: `overseer-lead` while its agent runs, else the only agent) at most once a minute per pane, three attempts. `intercom.luau` resolves the pane with `tern inspect` and runs pi-intercom's CLI as `overseer`. `syncLeads` keeps `overseer-lead` true for worktrees in a family.
+- *The omp extension* (`omp/overseer-rails/index.ts`) runs in each interactive omp session in a Tern pane (subagents and the advisor are headless and skip it), and only while `git config --bool overseer.coordination` says `true` (cached like the family). `before_agent_start` reads the family from git config (`worktrunk.state.<branch>.vars.*`, milliseconds where `wt` takes ~0.4 s), diffs each relative's branch tip against what this session last saw (kept as `overseer-rails.seen` session entries, so it survives resume), adds the latest note from the board, and flags files both branches change against `origin/HEAD`. Notes are lines in `<git-common-dir>/overseer/notes.jsonl` (appended once per turn; compacted to the newest 80 past 256 KiB). `overseer_family` action `message` writes one JSON file per recipient branch into `<git-common-dir>/overseer/outbox/` (temp file, then rename) and returns at once; it never waits for a reply.
+- *Overseer's relays* (`window.luau`, "Coordination rails"): `onAgentChange` (from `agent_state`/`agent_finished`) records check-ins and relays a sub-worktree's lead going waiting or failed, and remembers a finished turn so `noticeFinished` relays it once its PR is known (once per PR and head commit, within 15 minutes). `noticeMoves` compares each listing's head commits with the last: a parent that moved notifies children containing its old tip when that tip isn't on the base branch. `deliverMail` (every tick) reads each coordinating repository's outbox, queues each message for the recipient branch's worktree with who sent it, and deletes the file (unreadable or undeliverable ones are logged and deleted too). `tell` queues per worktree; `flushRails` hands the queue to the worktree's lead (`leadOf`: `overseer-lead` while its agent runs, else the only agent, any CLI) with `cx.agents:ask`, at most once a minute per pane unless the message is marked urgent (briefs, agent mail), three attempts. `syncLeads` keeps `overseer-lead` true for worktrees in a family.
 - *Briefs*: `overseer-subworktree --brief` writes `overseer-brief.md` into the new worktree's private Git directory; `startBriefs` renames it to `overseer-brief.started.md` (so a refresh can't start it twice) and runs `tern new session|tab … -- omp @<file>` without switching you away, binding a new session to the worktree.
 
 Kept in kv `rails` (times are `os.time()` seconds): `queue`, `unread`, `sentAt`, `checkin`, `told`. `reconcileGone` drops gone worktrees' records; rate marks expire after a minute.
@@ -148,7 +148,7 @@ The panel stays on the left of whichever tab you're looking at, across every ses
 | Linear logo · PR icon | The ticket the branch names (`feat/ENG-123-…`) · the PR's state |
 | 🧊 | Parked in the Ice Box |
 | **done** · **failed** on a tab | That tab's agent turn ended while you were elsewhere |
-| **overseer** on a tab | The session Overseer's [coordination](#coordination) messages go to |
+| **overseer** on a tab | The session Overseer's [coordination](#coordination) messages go to (coordination on) |
 
 Tab names leave out what the row already says: a GitHub pull request tab reads `#123 <title>`, without its author and repository. Hover a tab for its full name.
 
@@ -208,15 +208,15 @@ The hierarchy lives in Git config (Worktrunk's per-branch `overseer-parent` vari
 
 ### Coordination
 
-With the [omp integration](#omp-integration) and pi-intercom, the agents of a task and its sub-worktrees stay aware of each other, whichever side is doing the work:
+Off until you turn it on, per repository: **Turn on agent coordination…** on the project's right-click menu (with a confirmation card), **Turn off agent coordination** to stop. Once on, the agents of a task and its sub-worktrees stay aware of each other, whichever side is doing the work:
 
-- **Before each prompt**, an agent hears what changed in its family since it last looked: new commits, files both branches touch, and what the others are working on or just finished.
-- **Overseer wakes the task's agent** when a sub-worktree's agent is waiting for an answer, its turn failed, or it finished with a pull request open. A sub-worktree built on its parent's branch hears when that branch moves, so it can rebase.
-- **Agents message each other** with the `overseer_family` tool, or ask and wait for an answer over pi-intercom.
+- **Overseer wakes the task's agent** when a sub-worktree's agent is waiting for an answer, its turn failed, or it finished with a pull request open. A sub-worktree built on its parent's branch hears when that branch moves, so it can rebase. These reach any agent CLI Tern runs.
 - **You brief them all** with **Brief sub-worktrees…**.
+- **Before each prompt**, an omp agent hears what changed in its family since it last looked: new commits, files both branches touch, and what the others are working on or just finished.
+- **omp agents message each other** with the `overseer_family` tool; Overseer delivers the message, and an answer comes back later as a new message.
 - **The panel shows it:** **N new** counts Overseer's messages since you last opened that session, and a sub-worktree's row says when its agent last checked in.
 
-Messages inform; they never act. Overseer decides when to send one from Tern's agent states and Git, never from what an agent wrote, and sends a session at most one a minute. Each worktree has one **overseer session** that receives them: its only omp session, or the one you pick with **Make overseer session**.
+Messages inform; they never act. Overseer decides when to send its own from Tern's agent states and Git, never from what an agent wrote, and sends a session at most one a minute (briefs and agents' messages go at once). Each worktree has one **overseer session** that receives them: its only agent, or the one you pick with **Make overseer session**. Nothing extra to install: the messages travel through Tern and files in the repository's Git directory.
 
 ### Visualize a PR
 
@@ -232,7 +232,7 @@ With [omp](https://omp.sh) installed, there's nothing to set up: each time Overs
 |---|---|
 | `overseer-subworktree` skill | Teaches agents to create worktrees the right way: sub-worktrees for their task's sub-tasks, top-level worktrees otherwise |
 | `overseer-worktrees` rule | Stops an agent that types a raw `git worktree add` or `wt switch --create` and points it at the skill |
-| `overseer-rails` extension | Keeps the agents of a worktree family informed (needs pi-intercom) |
+| `overseer-rails` extension | Keeps the agents of a worktree family informed, when [coordination](#coordination) is on |
 
 They load in omp sessions started after the link (`/new` restarts one); `omp plugin list` shows it. `omp plugin disable overseer-omp` turns them off, and Overseer leaves it that way. Overseer also removes the symlinks into `~/.omp/agent` that earlier versions had you make, so omp doesn't load them twice. Using omp without Tern? Link it yourself: `omp plugin link "$PWD/omp"`.
 
@@ -258,7 +258,7 @@ They load in omp sessions started after the link (`/new` restarts one); `omp plu
 - **What did Overseer just do?** **Show Overseer's operation log** in the command palette lists every creation, deletion, brief and coordination message, with when it happened, how long it took and how it ended. The same entries are in Tern's log (`~/Library/Logs/Tern/tern.log`; search for `Overseer:`).
 - **The panel froze for a few seconds.** Tern pauses a plugin's timers when one of its callbacks runs too long (5 s, doubling on repeats). Overseer logs `Tern paused its … hook`, keeps the panel following you and finishes jobs from a second clock meanwhile, and catches up when the pause ends. A draw that comes close logs `slow draw` with where its time went.
 - **A creation or deletion seems stuck after its tab says it's done.** Overseer restarts its tick when it's more than 5 s late; each restart shows in the operation log as `tick restarted`, with how long it had stopped.
-- **Agents aren't coordinating.** Check that pi-intercom is installed for omp, that `omp plugin list` shows `overseer-omp`, and that the agents' sessions started after Overseer linked it (`/new` restarts one). With several omp sessions in a worktree, pick one with **Make overseer session**.
+- **Agents aren't coordinating.** Check that coordination is on for the repository (`git config --get overseer.coordination` prints `true`; the project's menu shows **Turn off agent coordination**), that `omp plugin list` shows `overseer-omp`, and that the agents' sessions started after Overseer linked it (`/new` restarts one). With several agents in a worktree, pick one with **Make overseer session**. Agents' messages that never arrived show in the operation log as `message` entries (`undeliverable`, `unreadable`), deliveries as `relay`.
 
 ## Developing
 
@@ -285,7 +285,7 @@ omp ttsr test --rule omp/rules/overseer-worktrees.md --source tool --tool bash '
 omp ttsr test --rule omp/rules/overseer-worktrees.md --source tool --tool bash 'wt switch fix/existing'
 ```
 
-The extension's pure helpers (`familyFromConfig`, `mergeNotes`, `promptNote`, …) are exported, so `bun` can import them for a quick check; end to end, start an omp session in a Tern pane with `omp -e omp/overseer-rails/index.ts` and look for its hidden `overseer-rails` messages in the session file.
+The extension's pure helpers (`familyFromConfig`, `parseNotes`, `latestNote`, `compactNotes`, `writeMailbox`, `promptNote`, …) are exported, so `bun` can import them for a quick check; end to end, turn coordination on in a test repository (`git config overseer.coordination true`), start an omp session in a Tern pane with `omp -e omp/overseer-rails/index.ts`, and watch `<git-common-dir>/overseer/` and the operation log.
 
 Smoke-test UI changes in an **isolated Tern window** so your real sessions are untouched:
 
@@ -319,7 +319,8 @@ Other conventions:
 - The panel moves into each tab you switch to, so every switch animates briefly and resizes the terminals in both tabs (full-screen programs redraw). In a tab split top-and-bottom it sits beside the top half.
 - A plugin reload during a Visualize PR run, including the one Tern does when you edit a file in a linked plugin, ends the run and leaves its tab on the waiting message. Run it again.
 - Multiple Tern windows work but haven't been exhaustively tested together.
-- Coordination needs omp and pi-intercom, on one machine. Other agent CLIs get the panel and status, not the rails.
-- Only a worktree's overseer session is wired to its parent: another omp session in the same sub-worktree that gets stuck doesn't wake the parent, though its notes still reach the family.
+- Coordination runs on one machine: the mailbox and notes live in the repository's Git directory. Overseer's wake-ups and briefs reach any agent CLI; the family summary, notes and agent-to-agent messages need omp.
+- Agents' messages don't wait for an answer; a reply arrives later as a new message.
+- Only a worktree's overseer session is wired to its parent: another agent in the same sub-worktree that gets stuck doesn't wake the parent, though an omp one's notes still reach the family.
 - **needs you?** is read from the setup tab's output, so a setup step that prints nothing for a minute trips it too.
 - The worktree rule fires at most once per omp session; after that the agent relies on the skill it read.

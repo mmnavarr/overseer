@@ -29,13 +29,14 @@ Running five agents on five branches means five checkouts, a pile of terminals, 
 
 ### Works with your agents
 
-| | Any agent CLI | [omp](https://omp.sh) | omp + [pi-intercom](https://github.com/nicobailon/pi-intercom) |
-|---|:-:|:-:|:-:|
-| Sessions per worktree, status on every row, PRs and tickets | ✓ | ✓ | ✓ |
-| Agents started from a ticket, Visualize PR, sub-worktrees made by agents | | ✓ | ✓ |
-| Agents in a task keeping each other informed | | | ✓ |
+| | Any agent CLI | [omp](https://omp.sh) |
+|---|:-:|:-:|
+| Sessions per worktree, status on every row, PRs and tickets | ✓ | ✓ |
+| Overseer's wake-ups and briefs, with agent coordination on | ✓ | ✓ |
+| Agents started from a ticket, Visualize PR, sub-worktrees made by agents | | ✓ |
+| Family news before each prompt, agents messaging each other | | ✓ |
 
-Claude Code, Codex, Gemini, Aider and others get the panel and their status; omp unlocks the rest.
+Claude Code, Codex, Gemini, Aider and others get the panel, their status and Overseer's messages; omp unlocks the rest. Nothing else to install.
 
 ## Install
 
@@ -53,8 +54,7 @@ That's it. Tern downloads Overseer into its own plugins folder and loads it; no 
 |---|---|
 | [GitHub CLI](https://cli.github.com) (`gh`), signed in | PR badges, Visualize PR |
 | [Linear CLI](https://github.com/schpet/linear-cli) (`linear`), signed in | Ticket links |
-| [omp](https://omp.sh) | Ticket agents, Visualize PR, sub-worktrees made by agents (Overseer sets up its omp side itself) |
-| [pi-intercom](https://github.com/nicobailon/pi-intercom) and [Bun](https://bun.sh) | Agents in a task keeping each other informed |
+| [omp](https://omp.sh) | Ticket agents, Visualize PR, sub-worktrees made by agents, agents messaging each other (Overseer sets up its omp side itself) |
 
 **Update** with `tern plugin install github.com/mmnavarr/overseer --force`. **Uninstall** with `tern plugin remove overseer` (and `omp plugin uninstall overseer-omp` if you use omp).
 
@@ -102,7 +102,7 @@ You get the branch, its session and an omp agent already reading the ticket.
 
 A task's worktree can own the worktrees of its sub-tasks. Agents create them for you (or use **Move under…**), each with its own session, PR and ticket, folded under the task with **▾ N**.
 
-Their agents stay in touch: each hears what changed in its family before every prompt, the task's agent is woken when a sub-task's agent needs an answer or opens a PR, and **Brief sub-worktrees…** messages them all. Messages only inform; they never trigger actions.
+Turn on **agent coordination** from a project's right-click menu and their agents stay in touch: the task's agent is woken when a sub-task's agent needs an answer, fails or opens a PR, sub-tasks hear when the task's branch moves, and **Brief sub-worktrees…** messages them all. omp agents also hear their family's news before every prompt and can message each other. Messages only inform; they never trigger actions. It's off until you turn it on, per repository.
 
 ## Visualize a PR
 
@@ -131,6 +131,7 @@ Worktrunk owns the worktrees, Tern owns the sessions, and Overseer never deletes
 - **No PR badges.** Sign in with `gh auth login`. Badges only show for repositories whose `origin` is on GitHub.
 - **No ticket links.** Sign in with `linear auth login`, or pick a workspace with **Set Linear workspace…** on the project's right-click menu. The branch name needs a ticket ID such as `ENG-123`.
 - **A new worktree says "needs you?".** Setup is asking a question, usually a Worktrunk hook approval. Click the row to answer it.
+- **Agents in a task don't hear from each other.** Turn on **agent coordination** from the project's right-click menu. omp sessions started before Overseer linked its omp side need `/new`.
 - **Anything else.** **Show Overseer's operation log** in the command palette lists what Overseer did and how it ended. If that doesn't explain it, [open an issue](https://github.com/mmnavarr/overseer/issues/new/choose) with your Tern and Worktrunk versions.
 
 ## Contributing

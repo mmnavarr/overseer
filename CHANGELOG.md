@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.4.0 (2026-11-06)
+
+- **Agent coordination is opt-in, per repository.** Turn it on with **Turn on agent coordination…** on a project's right-click menu, and off from the same place. Off, Overseer sends no wake-ups or relays, and hides **Brief sub-worktrees…**, **Make overseer session**, **N new**, check-ins and the **overseer** badge; omp agents get no family summary. Sub-worktrees themselves work either way. Repositories that already used coordination keep it on when you update; every other repository starts off.
+- **No more pi-intercom or Bun.** Overseer hands its messages to agents through Tern itself, so wake-ups and briefs now reach any agent CLI, not just omp. omp agents' `overseer_family` messages go through a mailbox in the repository's Git directory, which Overseer delivers, and the notes board is a file beside it. The one thing lost: an agent can no longer block waiting for another's answer; replies arrive as new messages. You can uninstall pi-intercom if nothing else uses it.
+
 ## 2.3.3 (2026-11-06)
 
 - **Fixed: coordination with Worktrunk 0.81.** Worktrunk 0.81 moved a worktree's commit to `head` and its ahead/behind counts to `default_branch` and `upstream` in `wt list`'s JSON. Overseer only read the old names, so on 0.81 sub-worktrees were never told their parent's branch moved, a task's agent could miss a sub-worktree finishing with new commits on its pull request, and row tooltips lost their ahead/behind counts. Overseer now reads both, and is tested with Worktrunk 0.40 and 0.81 ([#4](https://github.com/mmnavarr/overseer/issues/4)).
