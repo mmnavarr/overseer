@@ -834,11 +834,33 @@ local function firstLeaf(tree, skip)
 	return firstLeaf(tree[1], skip) or firstLeaf(tree[2], skip)
 end
 
--- The panel's share of the tab when it is the tab's whole left side.
+-- Whether `tree` contains `pane`.
+local function hasPane(tree, pane)
+	if not tree then return false end
+	if tree.pane then return tree.pane == pane end
+	return hasPane(tree[1], pane) or hasPane(tree[2], pane)
+end
+
+-- The panel's share of the tab's width while it is the leftmost pane, however
+-- deeply the tab's splits nest it. Each "right" split it sits left of multiplies
+-- the share; "down" splits don't change its width. A pane that isn't on the left
+-- edge returns nil, so pin still moves it there.
 local function leftShare(cx, tab, pane)
 	local layout = cx.session:layout(tab)
-	local root = layout and layout.root
-	if root and root.split == "right" and root[1] and root[1].pane == pane then return root.ratio end
+	local node = layout and layout.root
+	local share = 1
+	while node and not node.pane do
+		if node.split == "right" then
+			if not hasPane(node[1], pane) then return nil end
+			share = share * node.ratio
+			node = node[1]
+		elseif hasPane(node[1], pane) then
+			node = node[1]
+		else
+			node = node[2]
+		end
+	end
+	if node and node.pane == pane then return share end
 	return nil
 end
 
