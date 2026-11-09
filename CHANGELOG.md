@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.4.2 (2026-11-09)
+
+- **Fixed: the Projects panel's width in tabs that already have splits.** Tern places a pane beside another, so in a tab with splits the panel lands nested inside one, and Overseer stopped measuring it: the panel arrived at the wrong width (half of the pane it was placed beside), and a width you dragged it to there was forgotten on the next tab switch. Overseer now measures the panel's share of the tab however deeply it's nested, so it arrives at the width you left it and remembers changes. Thanks to [@cxxzsh](https://github.com/cxxzsh) ([#5](https://github.com/mmnavarr/overseer/pull/5)).
+
 ## 2.4.1 (2026-11-06)
 
 - **Clearer worktree state marks.** Waiting, finished and failed agents show as filled circles in the state's colour with a `?`, check or `!` on top, sized and centred like the other dots, instead of heavy text characters.
