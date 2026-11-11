@@ -64,7 +64,7 @@ That's it. Tern downloads Overseer into its own plugins folder and loads it; no 
 2. **Add a repo** with **+** in the panel's header.
 3. **Open a worktree** by clicking its row.
 4. **Start a new one** with **+** next to a project.
-5. **Right-click** a worktree or project for everything else, and open **Settings** with the cog next to Projects: the Ice Box, each project's base branch, Linear workspace and agent coordination, your GitHub and Linear sign-ins, and the changelog. Its **Usage** tab shows what your omp sessions cost, by project and worktree.
+5. **Right-click** a worktree or project for everything else, and open **Settings** with the cog next to Projects: the Ice Box, each project's base branch, Linear workspace and agent coordination, your GitHub and Linear sign-ins, and the changelog.
 
 <table>
 <tr>

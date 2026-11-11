@@ -8,7 +8,6 @@ local ui = tern.ui
 local Input = require("./input")
 local Prefs = require("./prefs")
 local oplog = require("./oplog")
-local Usage = require("./usage")
 local view = require("./view")
 local wt = require("./worktrunk")
 
@@ -329,7 +328,7 @@ end
 local function generalSection()
 	local prefs = Prefs.get()
 	return {
-		heading("general-head", "Panel"),
+		heading("general-head", "General"),
 		ui.node("col", { key = "general", gap = "none" }, {
 			row("icebox-field", "Ice Box",
 				"Park worktrees you're not working on at the bottom of their project. Off shows parked worktrees in place and hides the 🧊 button; they stay parked for when you turn it back on.",
@@ -447,14 +446,8 @@ local function settingsPage(state)
 			ui.node("text", { key = "title", role = "overseer.settingsTitle", text = "Overseer Settings" }),
 			ui.node("text", { key = "version", spans = { ui.span(if state.version then "v" .. state.version else "", "muted") } }),
 		}),
-		ui.node("tabs", {
-			key = "tabs", active = state.tab,
-			items = { { id = "general", label = "General" }, { id = "usage", label = "Usage" } },
-		}),
 	}
-	local sections = if state.tab == "usage" then { Usage.view(state, heading) }
-		else { generalSection(), projectsSection(state), integrationsSection(state), helpSection() }
-	for _, section in sections do
+	for _, section in { generalSection(), projectsSection(state), integrationsSection(state), helpSection() } do
 		for _, node in section do table.insert(children, node) end
 	end
 	return ui.node("col", { key = "page", role = "overseer.settingsPage", gap = "lg" }, children)
@@ -523,7 +516,7 @@ tern.block.define("settings", {
 		local state = {
 			cx = cx, page = "settings", focus = nil, focusIds = {},
 			linear = {}, linearErrors = {}, branches = {}, coordination = {}, pending = {}, problems = {}, loaded = {},
-			tools = {}, watching = {}, tab = "general", range = "week",
+			tools = {}, watching = {},
 		}
 		gatherDiagnostics(state)
 		checkAll(state)
@@ -578,14 +571,7 @@ tern.block.define("settings", {
 		local id = ev.id or ""
 		local project = string.match(id, "%.proj%-(%x+)%.")
 		project = project and unhex(project)
-		if ev.ev == "select" and ev.id and string.match(ev.id, "%.tabs$") then
-			state.tab = if ev.item == "usage" then "usage" else "general"
-			if state.tab == "usage" and state.usage == nil then
-				Usage.load(state, projects(), function() render(state) end)
-			end
-		elseif ev.ev == "select" and type(ev.item) == "string" and string.match(ev.item, "^repo%-") then
-			state.repo = ev.item
-		elseif ev.ev == "change" then
+		if ev.ev == "change" then
 			if string.match(id, "%.icebox$") then
 				Prefs.set("icebox", ev.value == true)
 			elseif project and string.match(id, "%.base$") and type(ev.value) == "string" then
@@ -609,10 +595,6 @@ tern.block.define("settings", {
 				cx:open(tool.site)
 			elseif act == "recheck" then
 				checkAll(state)
-			elseif act == "range" then
-				state.range, state.repo = ev.value, nil
-			elseif act == "usage-read" then
-				Usage.load(state, projects(), function() render(state) end)
 			elseif act == "log" then
 				openPage(state, "log", function() return oplog.recent(LOG_SHOWN) end)
 			elseif act == "changelog" then

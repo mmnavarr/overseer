@@ -21,7 +21,7 @@ Tern reloads a linked plugin whenever a file in it changes, including inside `.g
 
 ## Pull request checklist
 
-- [ ] Tests pass: `python3 -B tests/test_worktree_operation.py -v`, `python3 -B tests/test_subworktree.py -v` and `BUN_BE_BUN=1 omp test tests/usage.test.ts`.
+- [ ] Tests pass: `python3 -B tests/test_worktree_operation.py -v` and `python3 -B tests/test_subworktree.py -v`.
 - [ ] You tried the change in a running Tern (an isolated window is fine) and say in the PR what you checked.
 - [ ] User-visible changes bump `version` in `plugin.toml` and `omp/package.json`, and add an entry at the top of [CHANGELOG.md](CHANGELOG.md).
 - [ ] External commands live in `worktrunk.luau` as argv arrays, never as shell text.

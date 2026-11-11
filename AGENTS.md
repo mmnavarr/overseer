@@ -50,13 +50,10 @@ When debugging an overrun, read the log: `exceeded its budget; paused … hook="
 | `omp/overseer-rails/index.ts` | The omp extension behind [coordination](#coordination): family summary before each prompt, the notes board, the `overseer_family` tool and its mailbox. |
 | `omplink.luau` | Links `omp/` into omp each time the plugin loads, and removes the old hand-made symlinks; logs to the operation log. |
 | `oplog.luau` | The operation log (`ops.log`), reading an operation's terminal, and spotting a creation's step, questions and warnings in it. |
-| `settings.luau` | The Settings tab (block `overseer.settings`, opened in a tab by the header's cog or **Overseer Settings** in the palette), in two tabs (Tern's `tabs` node, `items` and `active`; a click sends `select` with the tab's id as `item`). **General**: Panel (Ice Box), each project's base branch, Linear workspace and agent coordination, Integrations (whether `gh` and `linear` are installed and signed in, with Install and Connect), and Help & Diagnostics (the guide, the changelog read from `CHANGELOG.md`, the operation log, and diagnostics to copy). **Usage**: `usage.luau`. It runs in Tern's daemon, whose processes get the Dock's minimal PATH, so it finds CLIs with `wt.find_executable` like the panel does. Tern keeps a block's scroll position between pages, so `openPage` draws the log and changelog short first, which brings them back to the top, and fills them in 30 ms later. |
-| `usage.luau` | The Usage tab: runs `usage.ts` when the tab first opens and on ↻, and draws its answer (totals, a bar chart whose hover labels carry each bar's spend, tables by repository, worktree and model, the most expensive sessions). |
-| `usage.ts` | Reads omp's session files (`~/.omp/agent/sessions`, subagents' in folders inside their parent's) for Today, 7 days and 30 days, and prints one JSON object. Runs on omp's own Bun: omp is a compiled Bun program and `BUN_BE_BUN=1 omp usage.ts …` runs a file as Bun would, so Usage needs nothing omp doesn't bring. |
+| `settings.luau` | The Settings tab (block `overseer.settings`, opened in a tab by the header's cog or **Overseer Settings** in the palette): General (Ice Box), each project's base branch, Linear workspace and agent coordination, Integrations (whether `gh` and `linear` are installed and signed in, with Install and Connect), and Help & Diagnostics (the guide, the changelog read from `CHANGELOG.md`, the operation log, and diagnostics to copy). It runs in Tern's daemon, whose processes get the Dock's minimal PATH, so it finds CLIs with `wt.find_executable` like the panel does. Tern keeps a block's scroll position between pages, so `openPage` draws the log and changelog short first, which brings them back to the top, and fills them in 30 ms later. |
 | `prefs.luau` | Settings shared by both halves: kv `settings` (defaults filled in, wrong types ignored), `settings-rev` (bumped on every change made from Settings; the window's tick watches it to refresh and redraw), and `SETUP`, the Install and Connect commands the window runs in a terminal for the Settings tab (kv `setup-request`). |
 | `update.luau` | The header's **Update** button: this copy's version (`plugin.toml`), how it updates (`how`: `install` for a copy `tern plugin install` made, `pull` for a linked Git checkout, nil otherwise), the newest version (`plugin.toml` on the repository's `main`, which is what `tern plugin install` fetches), and the announcement after an update. |
 | `tests/test_worktree_operation.py`, `tests/test_subworktree.py` | Real Git/Worktrunk tests for the helper and the sub-worktree script. |
-| `tests/usage.test.ts` | `usage.ts` against fixture sessions and a real Git repository with a linked worktree: day boundaries, project grouping, subagents. |
 
 ## State
 
@@ -127,8 +124,6 @@ Kept in kv `rails` (times are `os.time()` seconds): `queue`, `unread`, `sentAt`,
 **Ticket links.** `ticketOf` takes the first uppercase `ABC-123` in the branch (`%f[%w](%u[%u%d]*%-%d+)%f[%W]`), so `chore/stage-1` doesn't count. The workspace is `project.linear`, else the slug from `linear auth whoami` (looked up once; ↻ retries a failure). URL: `https://linear.app/<workspace>/issue/<id>`.
 
 **Visualize PR.** `wt.pull_request_meta` (`gh pr view --json …`) and `wt.pull_request_diff` (`gh pr diff > file`) write the PR into a temp dir under plugin data. Then `omp -p --no-session --no-extensions --no-skills --no-title --tools=read,grep,glob "<prompt>"` runs in the worktree with a 10-minute timeout. Its stdout from the first Markdown heading becomes the canvas. The read-only guarantee is the tool allow-list. Keep it that way: never add shell, edit or write tools, and never let it call `gh`.
-
-**Usage.** `usage.ts` gets the registered projects as JSON and reads every session file changed in the last 30 days, keeping only replies with a cost. A reply counts toward a range by its own timestamp; ranges are whole local days (7 days is today and the six before). Its folder (the session's `cwd`) is placed by the checkout's shared Git directory (a `.git` folder, or a `.git` file's `gitdir` and `commondir`), which must equal a project's `id`. The project's own folder is its **Primary checkout**; folders since removed match the project when they sit beside it named `<repo>.<…>`, Worktrunk's default. Everything else goes under **Other**. Subagent replies add to spend and the Subagents total, not to sessions. The 30 days take about 1.5 s; the tab reads again only on ↻.
 
 **Carly.** `tern.carly.export("ticket_worktree", …)` validates the id, resolves the project (argument by name or path, else the current session's project), validates the branch and starts creation. It replies once creation *starts* (setup can outlast Carly's 120 s limit). `tern.carly.context` tells Carly the registered project names.
 
@@ -239,10 +234,6 @@ Overseer fetches the PR's metadata and full diff from GitHub, then has omp write
 
 It's **read-only by construction**: omp runs with only read/grep/glob tools and no shell, so it can't push, comment or edit anything.
 
-### Usage
-
-Settings has two tabs, **General** and **Usage**. Usage shows what your omp sessions cost, Today, over 7 days (today and the six before) or over 30 days: spend, sessions, tokens and subagents, a bar for each day (each hour today; point at one for its date and spend), each project with its worktrees, each model, and the most expensive sessions. Click a project to list its worktrees; folders outside your projects are under **Other**. Prices are omp's estimates for each reply, so a subscription's bill can differ.
-
 ### omp integration
 
 With [omp](https://omp.sh) installed, there's nothing to set up: each time Overseer loads, it links its omp half into omp. That half is `omp/`, an omp plugin package named `overseer-omp`:
@@ -295,7 +286,6 @@ Run the helper's tests (they use temporary repos, config and approvals):
 python3 -B tests/test_worktree_operation.py -v
 python3 -B tests/test_subworktree.py -v
 bash -n worktree-operation.sh omp/skills/overseer-subworktree/overseer-subworktree
-BUN_BE_BUN=1 omp test tests/usage.test.ts
 ```
 
 Check the worktree rule fires on the commands it should, and only those:
