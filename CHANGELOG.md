@@ -2,6 +2,19 @@
 
 What changed in each Overseer release, newest first. Settings › Help & Diagnostics › Changelog shows the same.
 
+## 2.4.4 (2026-11-11)
+
+### Changed
+
+- An agent that finished while you were elsewhere shows a green check alone, no longer a white check in a green circle that looked like an open session's dot
+- Settings is titled Overseer Settings
+
+### Fixed
+
+- Tab dots are round: they were drawn slightly taller than wide
+- A working agent's tab dot glows instead of a ring that sat off its centre
+- A busy terminal's tab dot is the small amber dot instead of a full-size one
+
 ## 2.4.3 (2026-11-11)
 
 Requires Tern 0.9.15
