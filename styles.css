@@ -193,6 +193,7 @@
 [data-role='overseer.dotTabAgent'],
 [data-role='overseer.dotTabWaiting'],
 [data-role='overseer.dotTabDone'],
+[data-role='overseer.dotTabBusy'],
 [data-role='overseer.dotTabFailed'] {
   border-radius: 50%;
 }
@@ -207,10 +208,19 @@
 }
 /* Live work pulses: green while an agent works, amber while setup creates the
    worktree, red while it's being deleted. */
-[data-role='overseer.dotAgent'],
-[data-role='overseer.dotTabAgent'] {
+[data-role='overseer.dotAgent'] {
   background: var(--ok);
   animation: overseer-pulse-ok 1.6s ease-out infinite;
+}
+/* A working agent's tab dot: a soft glow rather than the row's ring. It's a
+   drop-shadow, which follows the painted circle, so it stays round and centred
+   wherever Tern snaps the dot's box. */
+[data-role='overseer.dotTabAgent'] {
+  animation: overseer-pulse-tab 1.6s ease-in-out infinite;
+}
+@keyframes overseer-pulse-tab {
+  0%, 100% { filter: drop-shadow(0 0 0 rgb(from var(--ok) r g b / 0%)); }
+  50% { filter: drop-shadow(0 0 3px rgb(from var(--ok) r g b / 100%)); }
 }
 [data-role='overseer.dotCreating'] {
   background: var(--warn);
@@ -278,9 +288,11 @@
   [data-role='overseer.dotDeleting'] {
     animation: none;
   }
-  [data-role='overseer.dotAgent'],
-  [data-role='overseer.dotTabAgent'] {
+  [data-role='overseer.dotAgent'] {
     box-shadow: 0 0 0 3px rgb(from var(--ok) r g b / 35%);
+  }
+  [data-role='overseer.dotTabAgent'] {
+    filter: drop-shadow(0 0 1.5px rgb(from var(--ok) r g b / 70%));
   }
   [data-role='overseer.dotCreating'] {
     box-shadow: 0 0 0 3px rgb(from var(--warn) r g b / 35%);
@@ -295,27 +307,38 @@
   line-height: 12px;
   text-align: center;
 }
+/* Tab dots: a 6.5 px circle drawn as a gradient in an 8 px box. A plain
+   border-radius circle this small comes out up to 2 device pixels taller than
+   wide, because Tern snaps the box's edges to whole pixels differently on each
+   axis; a gradient circle is drawn to its own radius, round wherever it lands. */
 [data-role='overseer.dotTab'],
 [data-role='overseer.dotTabAgent'],
 [data-role='overseer.dotTabWaiting'],
 [data-role='overseer.dotTabDone'],
+[data-role='overseer.dotTabBusy'],
 [data-role='overseer.dotTabFailed'] {
-  width: 6px;
-  height: 6px;
-  min-width: 6px;
-  margin: 0 1px;
+  --tab-dot: var(--t4);
+  flex: none;
+  width: 8px;
+  height: 8px;
+  min-width: 8px;
+  background: radial-gradient(circle 3.25px at 50% 50%, var(--tab-dot) calc(100% - 0.6px), transparent 100%);
 }
-[data-role='overseer.dotTab'] {
-  background: var(--t4);
+[data-role='overseer.dotTabAgent'] {
+  --tab-dot: var(--ok);
 }
 [data-role='overseer.dotTabWaiting'] {
-  background: var(--warn);
+  --tab-dot: var(--warn);
 }
 [data-role='overseer.dotTabDone'] {
-  background: var(--ok);
+  --tab-dot: var(--ok);
+}
+/* A terminal with a program running (not an agent). */
+[data-role='overseer.dotTabBusy'] {
+  --tab-dot: var(--warn);
 }
 [data-role='overseer.dotTabFailed'] {
-  background: var(--bad);
+  --tab-dot: var(--bad);
 }
 /* Uncommitted changes: a quiet mark hugging the name; hover the row for details. */
 [data-role='overseer.dirtyMark'] {

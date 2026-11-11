@@ -227,7 +227,7 @@ local function appendTabs(children, tabs)
 	for _, tab in ipairs(tabs or {}) do
 		local agent = AGENT_STATUS[tab.agent]
 		local tabChildren = {
-			dot("dot", if agent then agent.tabRole elseif tab.busy then "overseer.dotBusy" else "overseer.dotTab"),
+			dot("dot", if agent then agent.tabRole elseif tab.busy then "overseer.dotTabBusy" else "overseer.dotTab"),
 			text("name", shortTabName(tab.name), "overseer.tabName", { grow = 1 }),
 		}
 		-- The dot's colour says working or waiting; a finished turn gets a badge.
