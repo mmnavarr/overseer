@@ -33,6 +33,15 @@ function M.process(label, argv, options, fn)
 	end)
 end
 
+-- Fetches url and calls fn(result, cx) with its result. Errors in fn are
+-- logged under `label`.
+function M.fetch(label, url, options, fn)
+	tern.fetch(url, options, function(result, cx)
+		local ok, err = pcall(fn, result, cx)
+		if not ok then tern.log.warn("Overseer: " .. label .. " failed: " .. tostring(err)) end
+	end)
+end
+
 -- The `budget` event's text for the log: which hook paused, and for a timer,
 -- the callback that ran over.
 function M.describe(ev)

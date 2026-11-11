@@ -584,25 +584,33 @@ local function projectNode(model, project)
 end
 
 function View.render(model)
-	local children = {
-		ui.node("row", { key = "header", role = "overseer.header" }, {
-			ui.node("text", { key = "title", role = "overseer.heading", text = "Projects" }),
-			-- Overseer's own cog (styles.css, icons.css), not Tern's gear, whose hole sits low.
-			button("settings", "", "settings", { role = "overseer.settingsButton", variant = "quiet", size = "sm", title = "Overseer Settings" }),
-			ui.node("row", { key = "spacer", grow = 1 }, {}),
-			ui.node("buttons", { key = "actions", variant = "toolbar", size = "sm", label = "Projects" }, {
-				button("add", "", "add", { icon = "folder-plus", title = "Add an existing Git repository" }),
-				button("refresh", "", "refresh", {
-					icon = "refresh", busy = model.refreshing == true,
-					title = if model.refreshing then "Refreshing…" else "Refresh worktrees and sessions",
-				}),
-				-- Hidden while the Ice Box is turned off in Settings.
-				if model.iceboxEnabled ~= false then button("icebox", "🧊", "toggle-icebox", {
-					on = model.showIcebox == true,
-					title = if model.showIcebox then "Hide Ice Box worktrees" else "Show Ice Box worktrees",
-				}) else nil,
-			}),
+	local header = {
+		ui.node("text", { key = "title", role = "overseer.heading", text = "Projects" }),
+		-- Overseer's own cog (styles.css, icons.css), not Tern's gear, whose hole sits low.
+		button("settings", "", "settings", { role = "overseer.settingsButton", variant = "quiet", size = "sm", title = "Overseer Settings" }),
+	}
+	-- Only while a newer Overseer is out (update.luau).
+	if model.update then
+		table.insert(header, button("update", "Update", "update", {
+			variant = "primary", size = "sm",
+			title = string.format("Update Overseer to %s (you have %s)", model.update.latest, tostring(model.update.installed)),
+		}))
+	end
+	table.insert(header, ui.node("row", { key = "spacer", grow = 1 }, {}))
+	table.insert(header, ui.node("buttons", { key = "actions", variant = "toolbar", size = "sm", label = "Projects" }, {
+		button("add", "", "add", { icon = "folder-plus", title = "Add an existing Git repository" }),
+		button("refresh", "", "refresh", {
+			icon = "refresh", busy = model.refreshing == true,
+			title = if model.refreshing then "Refreshing…" else "Refresh worktrees and sessions",
 		}),
+		-- Hidden while the Ice Box is turned off in Settings.
+		if model.iceboxEnabled ~= false then button("icebox", "🧊", "toggle-icebox", {
+			on = model.showIcebox == true,
+			title = if model.showIcebox then "Hide Ice Box worktrees" else "Show Ice Box worktrees",
+		}) else nil,
+	}))
+	local children = {
+		ui.node("row", { key = "header", role = "overseer.header" }, header),
 	}
 	if model.confirmation then
 		table.insert(children, confirmationNode(model.confirmation))

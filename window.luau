@@ -6,6 +6,7 @@ local budget = require("./budget")
 local oplog = require("./oplog")
 local omplink = require("./omplink")
 local Prefs = require("./prefs")
+local update = require("./update")
 
 local cache = {}
 local inflight = {}
@@ -446,9 +447,12 @@ local function model(cx)
 			}
 		end
 	end
+	local newer = update.available()
 	local result = {
 		projects = {}, collapsed = collapsed, confirmation = confirmation,
 		showIcebox = showIcebox, iceboxEnabled = iceboxOn, refreshing = spinning,
+		-- A newer Overseer this copy can update to: the header's Update button.
+		update = if newer then { latest = newer, installed = update.installed } else nil,
 		-- Kept a little past the toast's own 5.2 s, then dropped from the view.
 		notice = if notice and os.time() - notice.at < NOTICE_KEEP_S then notice else nil,
 	}
@@ -857,6 +861,7 @@ local function refreshByHand(cx)
 	-- An explicit refresh also re-checks pull requests immediately.
 	for _, entry in cache do entry.prAt = nil end
 	if linearDefault == false then linearDefault = nil end
+	update.check(redraw, true)
 	refresh(cx, function(doneCx)
 		local function stop(stopCx)
 			spinning = false
@@ -2660,6 +2665,16 @@ end)
 command("ops-log", "Show Overseer's operation log", "list", nil, showLog)
 command("settings", "Overseer Settings", "gear", nil, openSettings)
 
+-- Runs `launch` (a shell command and optional cwd) in a new tab of this window
+-- named `title`, so you can watch it and answer its questions there.
+local function terminalTab(cx, title, launch)
+	local terminal = cx.layout:new_tab(launch)
+	if not terminal then report(cx, "Couldn't open a terminal for: " .. launch.command, title); return false end
+	local tab = cx.session:tab_of(terminal)
+	if tab then cx.layout:name_tab(tab, title) end
+	return true
+end
+
 -- Install or Connect on Settings' Integrations (settings.luau writes kv
 -- `setup-request`): runs one of Prefs.SETUP in a new tab of the window it came
 -- from, so you can answer the CLI's questions there.
@@ -2670,11 +2685,22 @@ local function runSetup(cx)
 	tern.kv.set("setup-request", nil)
 	local setup = Prefs.SETUP[request.run]
 	if not setup then return end
-	local terminal = cx.layout:new_tab({ command = setup.command })
-	if not terminal then report(cx, "Couldn't open a terminal for: " .. setup.command, setup.title); return end
-	local tab = cx.session:tab_of(terminal)
-	if tab then cx.layout:name_tab(tab, setup.title) end
-	oplog.write("info", { op = "setup", event = "started", detail = setup.command })
+	if terminalTab(cx, setup.title, { command = setup.command }) then
+		oplog.write("info", { op = "setup", event = "started", detail = setup.command })
+	end
+end
+
+-- Update in the header: updates this copy in a terminal tab (see update.luau).
+-- Tern reloads the plugin once its files change, and the button goes with it.
+local function runUpdate(cx)
+	local latest = update.available()
+	local commandLine, cwd = update.command()
+	if not latest or not commandLine then return end
+	if terminalTab(cx, "Update Overseer", { command = commandLine, cwd = cwd }) then
+		update.started()
+		oplog.write("info", { op = "update", event = "started",
+			detail = string.format("%s → %s: %s", tostring(update.installed), latest, commandLine) })
+	end
 end
 
 local TICKET_PROMPT = "Please read ticket %s to understand your task and ask any questions you have before we start"
@@ -2782,6 +2808,7 @@ local function canvasAction(ev, cx)
 	end
 	if not requireLocal(cx) then return end
 	if ev.act == "add" then pickProject(cx)
+	elseif ev.act == "update" then runUpdate(cx)
 	elseif ev.act == "refresh" then
 		refreshByHand(cx)
 	elseif ev.act == "collapse" then collapsed[ev.value] = not collapsed[ev.value]; redraw(cx)
@@ -2852,7 +2879,7 @@ for _, act in {
 	"settings", "add", "refresh", "collapse", "create", "open-worktree", "link", "icebox-add", "icebox-remove",
 	"toggle-icebox", "change-base", "set-linear", "remove-project", "visualize", "rename",
 	"close-session", "delete-worktree", "confirm", "confirm-all", "cancel", "tab", "fold", "move-under", "make-top-level",
-	"make-lead", "brief-children", "coordination-on", "coordination-off", "open-branch", "restore-project",
+	"make-lead", "brief-children", "coordination-on", "coordination-off", "open-branch", "restore-project", "update",
 } do CANVAS_ACTIONS[act] = true end
 
 -- Clicks only queue their work: an overrun here would pause the hook and
@@ -2947,6 +2974,14 @@ tick = function(generation, cx)
 		end)
 	end
 	if tern.kv.get("setup-request") ~= nil then separately("setup", runSetup) end
+	update.check(redraw)
+	local updated = update.finished()
+	if updated then
+		separately("updated", function(nextCx)
+			oplog.write("info", { op = "update", event = "finished", detail = updated })
+			notify(nextCx, "info", "Overseer updated", "Now on " .. updated)
+		end)
+	end
 	separately("form check", forms)
 	-- Resumes fast form checks after a plugin reload left a form open.
 	watchForms()

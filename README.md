@@ -56,7 +56,7 @@ That's it. Tern downloads Overseer into its own plugins folder and loads it; no 
 | [Linear CLI](https://github.com/schpet/linear-cli) (`linear`), signed in | Ticket links |
 | [omp](https://omp.sh) | Ticket agents, Visualize PR, sub-worktrees made by agents, agents messaging each other (Overseer sets up its omp side itself) |
 
-**Update** with `tern plugin install github.com/mmnavarr/overseer --force`. **Uninstall** with `tern plugin remove overseer` (and `omp plugin uninstall overseer-omp` if you use omp).
+**Update** with the **Update** button that appears beside the cog in the Projects header when a newer version is out, or with `tern plugin install github.com/mmnavarr/overseer --force`. **Uninstall** with `tern plugin remove overseer` (and `omp plugin uninstall overseer-omp` if you use omp).
 
 ## Use it
 
