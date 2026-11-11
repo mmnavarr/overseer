@@ -588,7 +588,7 @@ function View.render(model)
 		ui.node("row", { key = "header", role = "overseer.header" }, {
 			ui.node("text", { key = "title", role = "overseer.heading", text = "Projects" }),
 			-- Overseer's own cog (styles.css, icons.css), not Tern's gear, whose hole sits low.
-			button("settings", "", "settings", { role = "overseer.settingsButton", variant = "quiet", size = "sm", title = "Overseer settings" }),
+			button("settings", "", "settings", { role = "overseer.settingsButton", variant = "quiet", size = "sm", title = "Overseer Settings" }),
 			ui.node("row", { key = "spacer", grow = 1 }, {}),
 			ui.node("buttons", { key = "actions", variant = "toolbar", size = "sm", label = "Projects" }, {
 				button("add", "", "add", { icon = "folder-plus", title = "Add an existing Git repository" }),

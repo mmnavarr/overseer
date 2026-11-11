@@ -2637,12 +2637,12 @@ local function showLog(cx)
 	if not pane then report(cx, err or "Couldn't open the operation log.", "Operation log") end
 end
 
--- Overseer settings: focuses the Settings tab, or opens one.
+-- Overseer Settings: focuses the Settings tab, or opens one.
 local function openSettings(cx)
 	if not requireLocal(cx) then return end
 	local found = settingsPane(cx)
 	if found then cx.layout:focus(found.pane); return end
-	if not cx:new_block(SETTINGS_BLOCK, {}, "tab") then report(cx, "Couldn't open Overseer settings.", "Settings") end
+	if not cx:new_block(SETTINGS_BLOCK, {}, "tab") then report(cx, "Couldn't open Overseer Settings.", "Settings") end
 end
 
 -- Commands, like clicks, only queue their work.
@@ -2658,7 +2658,7 @@ command("create", "Create worktree", "branch", nil, function(cx)
 	if project then openForm(cx, "create", project) else navigator(cx); cx:toast("info", "Choose a project", "Click + beside a project's name.") end
 end)
 command("ops-log", "Show Overseer's operation log", "list", nil, showLog)
-command("settings", "Overseer settings", "gear", nil, openSettings)
+command("settings", "Overseer Settings", "gear", nil, openSettings)
 
 -- Install or Connect on Settings' Integrations (settings.luau writes kv
 -- `setup-request`): runs one of Prefs.SETUP in a new tab of the window it came

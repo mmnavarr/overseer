@@ -1,4 +1,4 @@
--- Overseer settings: a plugin block (host half) in a tab of its own, opened
+-- Overseer Settings: a plugin block (host half) in a tab of its own, opened
 -- from the gear in the Projects panel's header or the palette. It edits kv and
 -- git config itself and bumps `settings-rev` (Prefs.touch), which the window
 -- watches to refresh and redraw. Everything saves as you change it. Installing
@@ -443,7 +443,7 @@ end
 local function settingsPage(state)
 	local children = {
 		ui.node("row", { key = "top", align = "baseline", gap = "sm" }, {
-			ui.node("text", { key = "title", role = "overseer.settingsTitle", text = "Overseer settings" }),
+			ui.node("text", { key = "title", role = "overseer.settingsTitle", text = "Overseer Settings" }),
 			ui.node("text", { key = "version", spans = { ui.span(if state.version then "v" .. state.version else "", "muted") } }),
 		}),
 	}
@@ -523,7 +523,7 @@ tern.block.define("settings", {
 		return state
 	end,
 	title = function()
-		return "Overseer settings"
+		return "Overseer Settings"
 	end,
 	view = function(state, cx)
 		state.cx = cx

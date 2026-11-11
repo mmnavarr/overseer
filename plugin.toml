@@ -15,5 +15,5 @@ palette = false
 
 [[blocks]]
 id = "settings"
-title = "Overseer settings"
+title = "Overseer Settings"
 palette = false
