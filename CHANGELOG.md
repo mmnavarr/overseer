@@ -2,6 +2,16 @@
 
 What changed in each Overseer release, newest first. Settings › Help & Diagnostics › Changelog shows the same.
 
+## 2.5.0 (2026-11-11)
+
+### Added
+
+- **Usage in Settings**: Settings has two tabs, General and Usage. Usage shows what your omp sessions cost Today, over 7 days or over 30 days, by project, worktree and model, with the most expensive sessions
+
+### Changed
+
+- Settings' first section is called Panel
+
 ## 2.4.5 (2026-11-11)
 
 ### Added
