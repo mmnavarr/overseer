@@ -328,9 +328,11 @@ local function worktreeMenu(worktree)
 		table.insert(menu, { id = "brief-children", label = "Brief sub-worktrees…", icon = "message" })
 	end
 	if not worktree.is_main then
-		table.insert(menu, if worktree.iced
-			then { id = "icebox-remove", label = "Remove from Ice Box", icon = "box" }
-			else { id = "icebox-add", label = "Add to Ice Box", icon = "box" })
+		if worktree.iceboxEnabled ~= false then
+			table.insert(menu, if worktree.iced
+				then { id = "icebox-remove", label = "Remove from Ice Box", icon = "box" }
+				else { id = "icebox-add", label = "Add to Ice Box", icon = "box" })
+		end
 		if worktree.branch then
 			table.insert(menu, { id = "move-under", label = "Move under…", icon = "corner-down-right" })
 		end
@@ -585,7 +587,8 @@ function View.render(model)
 	local children = {
 		ui.node("row", { key = "header", role = "overseer.header" }, {
 			ui.node("text", { key = "title", role = "overseer.heading", text = "Projects" }),
-			button("help", "", "help", { icon = "info", variant = "quiet", size = "sm", title = "How Projects works" }),
+			-- Overseer's own cog (styles.css, icons.css), not Tern's gear, whose hole sits low.
+			button("settings", "", "settings", { role = "overseer.settingsButton", variant = "quiet", size = "sm", title = "Overseer settings" }),
 			ui.node("row", { key = "spacer", grow = 1 }, {}),
 			ui.node("buttons", { key = "actions", variant = "toolbar", size = "sm", label = "Projects" }, {
 				button("add", "", "add", { icon = "folder-plus", title = "Add an existing Git repository" }),
@@ -593,15 +596,24 @@ function View.render(model)
 					icon = "refresh", busy = model.refreshing == true,
 					title = if model.refreshing then "Refreshing…" else "Refresh worktrees and sessions",
 				}),
-				button("icebox", "🧊", "toggle-icebox", {
+				-- Hidden while the Ice Box is turned off in Settings.
+				if model.iceboxEnabled ~= false then button("icebox", "🧊", "toggle-icebox", {
 					on = model.showIcebox == true,
 					title = if model.showIcebox then "Hide Ice Box worktrees" else "Show Ice Box worktrees",
-				}),
+				}) else nil,
 			}),
 		}),
 	}
 	if model.confirmation then
 		table.insert(children, confirmationNode(model.confirmation))
+	end
+	-- A toast with a button. A new key is a new toast; Tern shows it on its first draw.
+	if model.notice then
+		local notice = model.notice
+		table.insert(children, ui.node("toast", {
+			key = "notice" .. tostring(notice.n), text = notice.text, sub = notice.sub, tone = notice.tone,
+			action = notice.action, label = notice.label,
+		}))
 	end
 	if #model.projects == 0 then
 		table.insert(children, ui.node("empty", {
@@ -615,6 +627,79 @@ function View.render(model)
 		table.insert(children, projectNode(model, project))
 	end
 	return ui.node("col", { key = "overseer", role = "overseer.navigator" }, children)
+end
+
+-- The operation log, newest first, for its glimpse. Entries are oplog lines:
+-- { at, op, event, project?, branch?, path?, detail?, seconds?, warnings? }.
+local TROUBLE = { failed = true, ["needs-you"] = true, undeliverable = true, unreadable = true }
+
+-- Seconds since 1970 of an ISO "…Z" time, in plain arithmetic: os.time would
+-- read the fields as local time.
+local function epochOf(at)
+	local y, m, d, hh, mm, ss = string.match(at or "", "^(%d+)-(%d+)-(%d+)T(%d+):(%d+):(%d+)Z$")
+	if not y then return nil end
+	local year, month = tonumber(y), tonumber(m)
+	if month <= 2 then year -= 1 end
+	local era = year // 400
+	local yoe = year - era * 400
+	local doy = (153 * ((month + 9) % 12) + 2) // 5 + tonumber(d) - 1
+	local days = era * 146097 + yoe * 365 + yoe // 4 - yoe // 100 + doy - 719468
+	return days * 86400 + tonumber(hh) * 3600 + tonumber(mm) * 60 + tonumber(ss)
+end
+
+-- Local time: the clock for today's entries, the date too for older ones.
+local function logTime(at)
+	local epoch = epochOf(at)
+	if not epoch then return tostring(at or "") end
+	return os.date(if os.date("%Y-%m-%d", epoch) == os.date("%Y-%m-%d") then "%H:%M:%S" else "%b %d %H:%M", epoch)
+end
+
+function View.operationLog(entries)
+	local rows = {}
+	for index, entry in entries do
+		local event = tostring(entry.event or "")
+		local what = tostring(entry.op or "") .. " " .. event
+		local warnings = tonumber(entry.warnings)
+		local trouble = TROUBLE[event] or (warnings or 0) > 0
+		local where = {}
+		if entry.project then table.insert(where, tostring(entry.project)) end
+		if entry.branch then
+			table.insert(where, tostring(entry.branch))
+		elseif entry.path then
+			table.insert(where, (string.match(tostring(entry.path), "([^/]+)/?$")))
+		end
+		local detail = {}
+		if warnings then table.insert(detail, plural(warnings, "warning")) end
+		if entry.detail then table.insert(detail, tostring(entry.detail)) end
+		if tonumber(entry.seconds) then table.insert(detail, "took " .. tostring(entry.seconds) .. " s") end
+		local title = { what, tostring(entry.at or "") }
+		if entry.path then table.insert(title, tostring(entry.path)) end
+		if entry.detail then table.insert(title, tostring(entry.detail)) end
+		-- Where it happened leads the detail, muted: Tern's table hides whole
+		-- columns rather than cut them, and a branch column pushed the detail out.
+		local said = { ui.span(table.concat(where, " · "), "muted") }
+		if #detail > 0 then
+			if #where > 0 then table.insert(said, " — ") end
+			table.insert(said, table.concat(detail, " · "))
+		end
+		table.insert(rows, {
+			id = tostring(index),
+			cells = {
+				ui.span(logTime(entry.at), "muted"),
+				if trouble then { text = what, dot = "error" } else what,
+				said,
+			},
+			title = table.concat(title, "\n"),
+		})
+	end
+	-- The role sets the text in the UI face (styles.css), as in the panel.
+	return ui.node("col", { key = "log", role = "overseer.operationLog" }, {
+		ui.table({
+			{ id = "at", head = "Time", mono = true, priority = 3 },
+			{ id = "what", head = "Operation", priority = 2 },
+			{ id = "detail", head = "Detail", priority = 1, grow = 1 },
+		}, rows, { empty = "Nothing logged yet." }),
+	})
 end
 
 return View

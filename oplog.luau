@@ -4,7 +4,7 @@
 -- ops.log (plugin data dir): one JSON object per line, newest last, capped at
 -- MAX_BYTES by dropping its oldest half. Each entry also goes to Tern's log:
 -- info for routine starts and finishes, warn for anything you'd want to look
--- at. Nothing here shows in the panel.
+-- at. **Show Overseer's operation log** shows the newest entries (`recent`).
 local M = {}
 
 local MAX_BYTES = 256 * 1024
@@ -41,6 +41,24 @@ function M.write(level, entry)
 	local message = table.concat(parts, " ")
 	if entry.detail then message ..= " — " .. tostring(entry.detail) end
 	if level == "warn" then tern.log.warn(message) else tern.log.info(message) end
+end
+
+-- The newest `limit` entries, newest first; lines that aren't JSON objects are skipped.
+function M.recent(limit)
+	local path = M.path()
+	if not tern.fs.exists(path) then return {} end
+	local ok, text = pcall(tern.fs.read, path, MAX_BYTES)
+	if not ok or type(text) ~= "string" then return {} end
+	local lines = string.split(text, "\n")
+	local entries = {}
+	for index = #lines, 1, -1 do
+		if #entries >= limit then break end
+		if lines[index] ~= "" then
+			local parsed, entry = pcall(tern.json.decode, lines[index])
+			if parsed and type(entry) == "table" then table.insert(entries, entry) end
+		end
+	end
+	return entries
 end
 
 -- The lines a terminal pane shows (scrollback included when asked); nil when it can't be read.

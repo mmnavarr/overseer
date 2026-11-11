@@ -18,6 +18,18 @@
   font-weight: 600;
   font-size: 14px;
 }
+/* The header's settings button draws Overseer's own cog (icons.css): Tern's
+   gear has its hole below the middle. It sits where Tern puts a button's
+   icon, in the 12px box Tern's icons use. */
+[data-role='overseer.settingsButton']::before {
+  content: '';
+  flex: none;
+  width: 12px;
+  height: 12px;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: 12px 12px;
+}
 [data-role='overseer.project'] {
   gap: 2px;
 }
@@ -396,4 +408,62 @@
 /* The form block opens in sans (`font = "sans"`); only its padding is ours. */
 [data-role='overseer.form'] {
   padding: 16px;
+}
+
+/* The operation log's glimpse: people's text in the UI face, like the panel,
+   and the table across the whole glimpse. */
+[data-role='overseer.operationLog'] {
+  width: 100%;
+  font: 400 13px/18px var(--sans);
+}
+
+/* Overseer settings (settings.luau): one readable column in the middle of its tab. */
+[data-role='overseer.settingsPage'] {
+  width: 100%;
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 28px 24px 48px;
+}
+[data-role='overseer.settingsTitle'] {
+  font: 600 20px/28px var(--sans);
+}
+/* Section headings mark where one group of settings ends and the next begins. */
+[data-role='overseer.settingsSection'] {
+  margin-top: 20px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--l2);
+}
+[data-role='overseer.settingsHeading'] {
+  font: 600 18px/26px var(--sans);
+}
+/* Each project's card: its name, then its path beside it as a small code
+   block, which wraps under the name when the path is long. */
+[data-role='overseer.settingsHead'] {
+  align-items: center;
+  flex-wrap: wrap;
+}
+[data-role='overseer.settingsProject'] {
+  font: 600 16px/22px var(--sans);
+}
+[data-role='overseer.settingsPath'] {
+  min-width: 0;
+  max-width: 100%;
+  padding: 1px 6px;
+  border-radius: var(--r-ctl);
+  background: var(--l1);
+  font: 400 11px/16px var(--mono);
+  color: var(--t2);
+  overflow-wrap: anywhere;
+}
+/* Settings › Changelog: each release is its version, date and an Installed
+   badge on the running one, then its notes, with a rule between releases. */
+[data-role='overseer.release'] {
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--l2);
+}
+[data-role='overseer.releaseHead'] {
+  align-items: center;
+}
+[data-role='overseer.releaseVersion'] {
+  font: 600 16px/22px var(--sans);
 }

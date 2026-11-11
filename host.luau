@@ -1,5 +1,7 @@
 local ui = tern.ui
 local Input = require("./input")
+-- The Settings block lives in its own module.
+require("./settings")
 
 local LABELS = {
 	name = "Display name", branch = "Branch name", base = "Base branch", linear = "Workspace URL or name",
