@@ -2,6 +2,12 @@
 
 What changed in each Overseer release, newest first. Settings › Help & Diagnostics › Changelog shows the same.
 
+## 2.4.5 (2026-11-11)
+
+### Added
+
+- **Update** beside the cog in the Projects header when a newer Overseer is out: it updates Overseer in a terminal tab (`tern plugin install … --force`, or `git pull --ff-only` in a linked checkout), and a notification says so once the new version loads. Overseer checks every hour, and on ↻
+
 ## 2.4.4 (2026-11-11)
 
 ### Changed
