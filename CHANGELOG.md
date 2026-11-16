@@ -2,6 +2,12 @@
 
 What changed in each Overseer release, newest first. Settings › Help & Diagnostics › Changelog shows the same.
 
+## 2.5.2 (2026-11-16)
+
+### Added
+
+- **Create sub-worktree…** on a worktree's right-click menu: the New worktree form, and the new worktree nests under the one you clicked, already while it's being created. It branches from the project's base branch, like **+**
+
 ## 2.5.1 (2026-11-11)
 
 ### Removed

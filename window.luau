@@ -323,11 +323,18 @@ end
 -- branch; a worktree's owner is the top of that chain among the project's
 -- listed worktrees, so nesting is one level deep. A link to a branch without
 -- a listed worktree, a primary checkout as the child, or a cycle leaves the
--- worktree on top. Returns path -> owner path.
-local function owners(entry)
+-- worktree on top. `pending` adds links of creations still under way
+-- (branch -> parent branch). Returns path -> owner path.
+local function owners(entry, pending)
 	local result = {}
 	if not entry or not entry.worktrees then return result end
 	local parents = entry.parents or {}
+	if pending then
+		parents = table.clone(parents)
+		for branch, parent in pending do
+			if parents[branch] == nil then parents[branch] = parent end
+		end
+	end
 	local byBranch = {}
 	for _, worktree in entry.worktrees do
 		if worktree.branch then byBranch[worktree.branch] = worktree end
@@ -434,17 +441,21 @@ local function model(cx)
 	local agents = worktreeAgents(cx)
 	local rails = railsState()
 	local seen = false
-	-- Creations in progress, by project and branch.
-	local creating = {}
+	-- Creations in progress, by project and branch, and the parents of sub-worktrees among them.
+	local creating, creatingParents = {}, {}
 	for id, job in jobs do
 		if job.kind == "create" and job.branch and job.project then
 			local state = progress[id] or {}
 			creating[job.project] = creating[job.project] or {}
 			creating[job.project][job.branch] = {
-				pane = job.pane, label = job.displayName or job.branch, step = state.step,
+				pane = job.pane, label = job.displayName or job.branch, step = state.step, parent = job.parent,
 				elapsed = math.max(0, os.time() - (job.started or os.time())),
 				needsYou = state.needsYou == true, asking = state.asking == true, quiet = state.quiet,
 			}
+			if job.parent then
+				creatingParents[job.project] = creatingParents[job.project] or {}
+				creatingParents[job.project][job.branch] = job.parent
+			end
 		end
 	end
 	local newer = update.available()
@@ -467,7 +478,7 @@ local function model(cx)
 			total = entry and entry.worktrees and #entry.worktrees or 0,
 			coordination = coordinating, coordinationKnown = entry ~= nil and entry.coordination ~= nil,
 		}
-		local ownerOf = owners(entry)
+		local ownerOf = owners(entry, creatingParents[project.id])
 		local items, byPath = {}, {}
 		for _, worktree in (entry and entry.worktrees or {}) do
 			local item = table.clone(worktree)
@@ -506,6 +517,7 @@ local function model(cx)
 			if owner then
 				owner.family = owner.family or {}
 				table.insert(owner.family, item)
+				item.owned = true
 				if item.active then owner.activeChild = true end
 				local checkin = rails.checkin[item.path]
 				-- Wall-clock seconds only (values from before that change are ignored).
@@ -557,8 +569,8 @@ local function model(cx)
 		end
 		-- Ice Box worktrees sink to the bottom, keeping their relative order.
 		for _, item in iced do table.insert(row.worktrees, item) end
-		-- A creation Worktrunk hasn't listed yet gets its row right away, after
-		-- the primary checkout.
+		-- A creation Worktrunk hasn't listed yet gets its row right away: under
+		-- the worktree it's a sub-worktree of, else after the primary checkout.
 		local pendingRows = {}
 		for branch, state in (creating[project.id] or {}) do
 			if not state.listed then
@@ -570,7 +582,21 @@ local function model(cx)
 		end
 		table.sort(pendingRows, function(a, b) return a.branch < b.branch end)
 		local at = if row.worktrees[1] and row.worktrees[1].is_main then 2 else 1
-		for index, pending in pendingRows do table.insert(row.worktrees, at + index - 1, pending) end
+		for _, pending in pendingRows do
+			local parent
+			for _, item in items do
+				if item.branch and item.branch == pending.creating.parent then parent = item; break end
+			end
+			local owner = parent and (byPath[ownerOf[parent.path]] or parent)
+			if owner and table.find(row.worktrees, owner) then
+				owner.children = owner.children or {}
+				table.insert(owner.children, 1, pending)
+				if owner.folded == nil then owner.folded = folded[owner.path] == true and not owner.activeChild end
+			else
+				table.insert(row.worktrees, at, pending)
+				at += 1
+			end
+		end
 		-- Sessions of worktrees removed outside Overseer stay flagged until closed.
 		local gonePaths = {}
 		for path in (entry and entry.gone or {}) do table.insert(gonePaths, path) end
@@ -1966,7 +1992,8 @@ end
 
 -- Links `branch` under `parent` (nil: top level). The panel moves at once;
 -- the links are read back afterwards, so what Worktrunk stored wins.
-local function setParent(cx, project, branch, parent)
+-- `failure` titles the error report.
+local function setParent(cx, project, branch, parent, failure)
 	local entry = cache[project.id]
 	if entry then
 		entry.parents = entry.parents or {}
@@ -1974,7 +2001,7 @@ local function setParent(cx, project, branch, parent)
 		redraw(cx)
 	end
 	wt.set_var(project, branch, wt.PARENT_KEY, parent, function(ok, err, nextCx)
-		if not ok and nextCx then report(nextCx, err, "Couldn't move the worktree") end
+		if not ok and nextCx then report(nextCx, err, failure or "Couldn't move the worktree") end
 		if entry then refreshLinks(project, entry) end
 	end)
 end
@@ -2080,16 +2107,19 @@ local function openForm(cx, mode, project, worktree)
 		end)
 		return
 	end
-	local names = worktree and records("worktree-names")[project.id]
 	local id = token()
-	local pane = swapSlot(cx, current, function()
-		return cx:new_block("overseer.form", {
+	local names = worktree and records("worktree-names")[project.id]
+	local label = worktree and (names and names[worktree.path] or worktree.branch or "Detached HEAD")
+	local args = if mode == "child" then { id, mode, project.name, project.base, label }
+		else {
 			id, mode,
 			if worktree then worktree.branch or "Detached HEAD" else project and project.name or "",
 			if worktree then names and names[worktree.path] or ""
 				elseif mode == "linear" then project.linear or ""
 				else project and project.base or "",
-		}, "beside")
+		}
+	local pane = swapSlot(cx, current, function()
+		return cx:new_block("overseer.form", args, "beside")
 	end)
 	if not pane then report(cx, "Reload the Overseer plugin.", "Form unavailable"); return end
 	tern.kv.set("pending-form:" .. tostring(pane), {
@@ -2255,16 +2285,25 @@ local function launchCreation(cx, project, job)
 	return nil
 end
 
+-- A "child" form creates a sub-worktree of the worktree it was opened on.
 local function createWorktree(cx, pane, request, response)
 	local project = projectById(request.project)
 	if not project then rejectForm(cx, pane, "Project is no longer registered."); return end
 	local displayName, nameError = normalizeName(response.name)
 	if nameError then rejectForm(cx, pane, nameError); return end
+	local parent
+	if request.mode == "child" then
+		local owner, worktree = findWorktree(request.path)
+		if not owner or owner.id ~= project.id or not worktree.branch or removing(request.path) then
+			rejectForm(cx, pane, "The parent worktree is no longer available. Refresh Projects."); return
+		end
+		parent = worktree.branch
+	end
 	wt.validate(project, response.branch, function(ok, err, nextCx)
 		if not nextCx then return end
 		if not nextCx.session:pane(pane) then finishForm(nextCx, pane); return end
 		if not ok then rejectForm(nextCx, pane, err); return end
-		local launchError = launchCreation(nextCx, project, { branch = response.branch, displayName = displayName })
+		local launchError = launchCreation(nextCx, project, { branch = response.branch, displayName = displayName, parent = parent })
 		if launchError then rejectForm(nextCx, pane, launchError); return end
 		-- Never launched twice: finishing again after a cut-short callback skips this.
 		request.launched = true
@@ -2350,18 +2389,25 @@ local function sendBrief(cx, pane, request, response)
 end
 
 -- The worktree's path is only known once Worktrunk has created it, so the
--- display name chosen at creation is attached afterwards, by branch.
-local function applyCreatedName(job)
+-- display name and parent chosen at creation are attached afterwards, by branch.
+local function applyCreated(job)
 	local project = projectById(job.project)
-	if not job.displayName or not project then return end
+	if not project or not (job.displayName or job.parent) then return end
+	-- Nested right away, so the row doesn't flash at the top level while the link is saved.
+	local entry = cache[project.id]
+	if job.parent and entry then
+		entry.parents = entry.parents or {}
+		entry.parents[job.branch] = job.parent
+	end
 	wt.list(project, function(trees, _err, cx)
 		if not trees or not cx then return end
 		for _, tree in trees do
 			if tree.branch == job.branch and not tree.is_main then
+				if job.parent then setParent(cx, project, job.branch, job.parent, "Couldn't nest the new worktree") end
 				local names = records("worktree-names")
 				names[project.id] = names[project.id] or {}
 				-- A rename made while setup ran wins over the name typed at creation.
-				if names[project.id][tree.path] == nil then
+				if job.displayName and names[project.id][tree.path] == nil then
 					names[project.id][tree.path] = job.displayName
 					tern.kv.set("worktree-names", names)
 					redraw(cx)
@@ -2399,7 +2445,7 @@ end
 local function answerForm(cx, pane, request, response)
 	if response.cancelled or request.launched then
 		finishForm(cx, pane)
-	elseif request.mode == "create" and response.mode == "create" then
+	elseif (request.mode == "create" or request.mode == "child") and response.mode == request.mode then
 		createWorktree(cx, pane, request, response)
 	elseif request.mode == "rename" and response.mode == "rename" then
 		renameWorktree(cx, pane, request, response)
@@ -2533,7 +2579,7 @@ local function jobFinished(cx, job, status)
 		end
 	else
 		-- Applied on failure too: a partially created worktree keeps its label.
-		applyCreatedName(job)
+		applyCreated(job)
 		if status == 0 then
 			-- A ticket worktree opens on its own, with its agent (startTicketAgent).
 			local open = if job.agentPrompt then nil else {
@@ -2849,6 +2895,10 @@ local function canvasAction(ev, cx)
 		local project, worktree = findWorktree(view.worktreePath(ev.node))
 		if project then openForm(cx, "brief", project, worktree)
 		else report(cx, "Worktree not found. Refresh Projects.") end
+	elseif ev.act == "create-child" then
+		local project, worktree = findWorktree(view.worktreePath(ev.node))
+		if project then openForm(cx, "child", project, worktree)
+		else report(cx, "Worktree not found. Refresh Projects.") end
 	elseif ev.act == "rename" then
 		local project, worktree = findWorktree(view.worktreePath(ev.node))
 		if project then openForm(cx, "rename", project, worktree)
@@ -2879,7 +2929,7 @@ for _, act in {
 	"settings", "add", "refresh", "collapse", "create", "open-worktree", "link", "icebox-add", "icebox-remove",
 	"toggle-icebox", "change-base", "set-linear", "remove-project", "visualize", "rename",
 	"close-session", "delete-worktree", "confirm", "confirm-all", "cancel", "tab", "fold", "move-under", "make-top-level",
-	"make-lead", "brief-children", "coordination-on", "coordination-off", "open-branch", "restore-project", "update",
+	"make-lead", "brief-children", "create-child", "coordination-on", "coordination-off", "open-branch", "restore-project", "update",
 } do CANVAS_ACTIONS[act] = true end
 
 -- Clicks only queue their work: an overrun here would pause the hook and

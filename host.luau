@@ -22,6 +22,12 @@ local MODES = {
 			return state.project .. " · New branch from " .. state.base .. ". Worktrunk hooks will run."
 		end,
 	},
+	child = {
+		heading = "New sub-worktree", submit = "Create sub-worktree", fields = { "branch", "name" },
+		help = function(state)
+			return state.project .. " · Under " .. state.parent .. ", new branch from " .. state.base .. ". Worktrunk hooks will run."
+		end,
+	},
 	rename = {
 		heading = "Rename worktree", submit = "Save name", fields = { "name" },
 		help = function(state)
@@ -90,7 +96,7 @@ local function finish(state, cancelled)
 			state.focus = "branch"
 			return
 		end
-		response = { mode = "create", branch = state.fields.branch.text, name = state.fields.name.text }
+		response = { mode = state.mode, branch = state.fields.branch.text, name = state.fields.name.text }
 	end
 	local ok, err = pcall(tern.kv.set, "form:" .. state.token, response)
 	if not ok then
@@ -107,7 +113,7 @@ tern.block.define("form", {
 		local mode = if MODES[args[2]] then args[2] else "create"
 		local state = {
 			token = args[1] or "", mode = mode, project = args[3] or "",
-			base = args[4] or "master",
+			base = args[4] or "master", parent = args[5] or "",
 			focus = MODES[mode].fields[1],
 			submitted = false, cancelled = false, focusScheduled = false,
 		}

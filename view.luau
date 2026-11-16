@@ -324,6 +324,10 @@ local function worktreeMenu(worktree)
 	local menu = {}
 	if worktree.pr then table.insert(menu, { id = "visualize", label = "Visualize PR", icon = "merge" }) end
 	table.insert(menu, { id = "rename", label = "Rename…", icon = "pen" })
+	-- Only a top-level worktree owns sub-worktrees; the primary checkout owns none.
+	if worktree.branch and not worktree.is_main and not worktree.owned then
+		table.insert(menu, { id = "create-child", label = "Create sub-worktree…", icon = "plus" })
+	end
 	if worktree.children and worktree.coordination then
 		table.insert(menu, { id = "brief-children", label = "Brief sub-worktrees…", icon = "message" })
 	end

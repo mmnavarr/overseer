@@ -100,7 +100,7 @@ You get the branch, its session and an omp agent already reading the ticket.
 
 ## Sub-worktrees
 
-A task's worktree can own the worktrees of its sub-tasks. Agents create them for you (or use **Move under…**), each with its own session, PR and ticket, folded under the task with **▾ N**.
+A task's worktree can own the worktrees of its sub-tasks. Agents create them for you, or use **Create sub-worktree…** or **Move under…** on a worktree's menu. Each has its own session, PR and ticket, folded under the task with **▾ N**.
 
 Turn on **agent coordination** from a project's right-click menu and their agents stay in touch: the task's agent is woken when a sub-task's agent needs an answer, fails or opens a PR, sub-tasks hear when the task's branch moves, and **Brief sub-worktrees…** messages them all. omp agents also hear their family's news before every prompt and can message each other. Messages only inform; they never trigger actions. It's off until you turn it on, per repository.
 
