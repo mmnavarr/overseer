@@ -519,19 +519,36 @@ function M.validate(project, branch, done)
 	end)
 end
 
--- Rechecks the worktree's identity right before a removal. A dirty worktree
--- still validates; the caller decides whether its changes need confirming.
+-- Rechecks the worktree's identity right before a removal, from Git's own
+-- worktree list: it takes milliseconds, where `wt list` reads every worktree's
+-- status (over a second, and several seconds of CPU, in a large repository).
+-- Whether it's clean is local_changes' to say; the helper checks again anyway.
 function M.validate_removal(project, worktree, done)
-	M.list(project, function(trees, err, cx)
-		if not trees then done(nil, err, cx); return end
-		for _, current in trees do
+	git(project.path, { "worktree", "list", "--porcelain", "-z" }, function(result, err, cx)
+		if not result then done(nil, err, cx); return end
+		if result.status ~= 0 then done(nil, command_error("Cannot list worktrees", result), cx); return end
+		local records, record = {}, {}
+		for field in string.gmatch(result.stdout, "([^\0]*)\0") do
+			if field == "" then
+				if record.path then table.insert(records, record) end
+				record = {}
+			elseif string.sub(field, 1, 9) == "worktree " then
+				record.path = string.sub(field, 10)
+			elseif string.sub(field, 1, 7) == "branch " then
+				local ref = string.sub(field, 8)
+				record.branch = string.match(ref, "^refs/heads/(.+)$") or ref
+			end
+		end
+		if record.path then table.insert(records, record) end
+		for index, current in records do
 			if current.path == worktree.path then
-				if current.is_main or current.path == project.path then
+				-- Git lists the primary checkout first.
+				if index == 1 or current.path == project.path then
 					done(nil, "The primary checkout cannot be deleted.", cx)
 				elseif current.branch ~= worktree.branch then
 					done(nil, "Branch changed. Refresh Projects.", cx)
 				else
-					done(current, nil, cx)
+					done(table.clone(worktree), nil, cx)
 				end
 				return
 			end

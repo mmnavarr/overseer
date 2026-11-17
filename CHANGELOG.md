@@ -2,6 +2,17 @@
 
 What changed in each Overseer release, newest first. Settings › Help & Diagnostics › Changelog shows the same.
 
+## 2.5.3 (2026-11-17)
+
+### Fixed
+
+- Clicks and commands work while Tern has paused Overseer's timers. Before, a click waited out the pause (up to 5 minutes, after repeated pauses) and seemed to do nothing until Tern restarted
+- **Delete worktree** shows its confirmation, or starts, in a fraction of a second. Its check read `wt list`, which takes over a second in a large repository; it now reads Git's worktree list
+
+### Changed
+
+- Overseer works the Mac less: the background clock is one long-lived process instead of a new one every 5 s, a repository whose worktree listing is slow refreshes less often (up to every 2 minutes), and the full agent list is read in a callback of its own instead of in a draw
+
 ## 2.5.2 (2026-11-16)
 
 ### Added

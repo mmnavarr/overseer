@@ -1,13 +1,18 @@
 --!nonstrict
--- Tern gives every window-half callback 50 ms of Lua; native calls (the `cx`
--- API, `tern.kv`, starting a process) don't count. A callback past it is cut
--- short and its hook pauses for 5 s (doubling on repeats, up to 5 min). Due
--- timers and process results wait out the pause instead of being dropped, so
--- nothing has to be restarted afterwards.
+-- Tern gives every window-half callback 50 ms. Its docs say native calls (the
+-- `cx` API, `tern.kv`, `tern.fs`) don't count, but measured on Tern 0.9.26 they
+-- do: a callback looping on cx.session:panes(), tern.kv.get or tern.fs.exists
+-- is cut short at 50 ms like pure Lua. So a draw (model, render, canvas:set)
+-- has the whole 50 ms of wall time, natives included. A callback past it is
+-- cut short and its hook pauses for 5 s (doubling on repeats within 10 min of
+-- the last pause's end, up to 5 min). Due timers and process results wait out
+-- the pause instead of being dropped, so nothing has to be restarted afterwards.
 --
 -- Overseer still does its work in labelled timer callbacks started by
 -- `later`, and every other hook only queues work: a paused click hook would
--- swallow clicks for the pause, so it must stay too small to trip.
+-- swallow clicks for the pause, so it must stay too small to trip. While the
+-- timer hook is paused, clicks and commands run in their own hook instead
+-- (window.luau's userAction), so a pause doesn't freeze the panel.
 local M = {}
 
 -- The timer callback started last: when the timer hook pauses, this names
