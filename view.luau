@@ -1,10 +1,55 @@
-local ui = tern.ui
 local View = {}
 
+-- The panel's nodes are built here as the plain `{k, p, c}` tables tern.ui's
+-- builders return. `tern.ui.node` converts the whole subtree it's given on
+-- every call, so a nested panel paid for each node once per ancestor: 6.5 of
+-- a 7 ms render in a 16-worktree panel, against 0.5 ms here. Leaves (spans,
+-- the operation log's table) still come from tern.ui.
+local function spans(value)
+	if type(value) == "string" then return { { t = value } } end
+	if value.t then return { value } end
+	local list = table.create(#value)
+	for index, span in value do
+		list[index] = if type(span) == "string" then { t = span } else span
+	end
+	return list
+end
+
+local ui = {
+	span = tern.ui.span,
+	table = tern.ui.table,
+	node = function(kind, props, children)
+		return { k = kind, p = props, c = if children and #children > 0 then children else nil }
+	end,
+	el = function(tag, props, children)
+		props = props or {}
+		props.tag = tag
+		return { k = "el", p = props, c = if children and #children > 0 then children else nil }
+	end,
+	button = function(label, props)
+		props = props or {}
+		props.text = label or ""
+		return { k = "button", p = props }
+	end,
+	card = function(head, children, props)
+		props = props or {}
+		props.head = spans(head)
+		return { k = "card", p = props, c = if #children > 0 then children else nil }
+	end,
+}
+
+-- Paths and project ids as hex, for keys. Every draw asks for each row's, so
+-- they're kept: one entry per path ever shown.
+local hexKeys = {}
 local function safeKey(value)
-	return (string.gsub(value, ".", function(byte)
-		return string.format("%02x", string.byte(byte))
-	end))
+	local key = hexKeys[value]
+	if not key then
+		key = string.gsub(value, ".", function(byte)
+			return string.format("%02x", string.byte(byte))
+		end)
+		hexKeys[value] = key
+	end
+	return key
 end
 
 local function unhex(hex)
@@ -213,6 +258,8 @@ end
 -- A tab's name as the panel shows it: what the row around it already says is
 -- dropped (the full name stays in the tooltip).
 local function shortTabName(name)
+	-- Everything below cuts at a " · "; most names have none.
+	if not string.find(name, " · ", 1, true) then return name end
 	-- A GitHub pull request page: "<title> by <user> · Pull Request #12 · owner/repo" → "#12 <title>".
 	local title, number = name:match("^(.-) by [%w%-]+ · Pull Request #(%d+) · [%w%-%.]+/[%w%-%.]+$")
 	if title then return "#" .. number .. " " .. title end
