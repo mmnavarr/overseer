@@ -34,6 +34,14 @@ local watchForms
 local railsAfterListing, railsAfterLinks, railsAfterPullRequests, railsAfterSwitch
 -- Defined with the tick; every event checks it.
 local ensureTicking
+-- When Tern paused the timer hook, until when (tern.now() ms); 0 when running.
+-- Every timer waits out a pause (5 s, doubling on repeats to 5 min), so while
+-- one lasts, clicks, commands and the draws they ask for run in the callback
+-- at hand instead of a timer (see userAction and redraw).
+local timerPausedUntil = 0
+local function timerPaused()
+	return tern.now() < timerPausedUntil
+end
 
 local function records(key)
 	local value = tern.kv.get(key)
@@ -184,21 +192,26 @@ local agentStates = {}
 local agentCwds = {}
 local agentsListedAt = -AGENT_RECONCILE_MS
 
-local function agentBlocks(cx, panes)
-	local stale = tern.now() - agentsListedAt >= AGENT_RECONCILE_MS
+-- Reads the full agent list. The tick does it every AGENT_RECONCILE_MS in a
+-- callback of its own, not in a draw: with a draw's own work it came close
+-- to the 50 ms budget.
+local function listAgents(cx, panes)
+	agentStates, agentCwds = {}, {}
 	for _, pane in panes do
-		if stale then break end
-		if pane.kind == "agent" and agentStates[pane.pane] == nil then stale = true end
+		if pane.kind == "agent" then agentStates[pane.pane] = false end
 	end
-	if stale then
-		agentStates, agentCwds = {}, {}
-		for _, pane in panes do
-			if pane.kind == "agent" then agentStates[pane.pane] = false end
+	for _, agent in cx.agents:list() do
+		agentStates[agent.pane], agentCwds[agent.pane] = agent.state, agent.cwd
+	end
+	agentsListedAt = tern.now()
+end
+
+local function agentBlocks(cx, panes)
+	for _, pane in panes do
+		if pane.kind == "agent" and agentStates[pane.pane] == nil then
+			listAgents(cx, panes)
+			break
 		end
-		for _, agent in cx.agents:list() do
-			agentStates[agent.pane], agentCwds[agent.pane] = agent.state, agent.cwd
-		end
-		agentsListedAt = tern.now()
 	end
 	local list = {}
 	for _, pane in panes do
@@ -701,17 +714,33 @@ local function separately(label, fn)
 	end)
 end
 
+-- Clicks and commands only queue their work: an overrun in their own hook
+-- would pause it and swallow clicks. While the timer hook is paused, though,
+-- queued work would wait out the pause, so it runs here instead.
+local function userAction(label, fn, cx)
+	if not cx or not timerPaused() then separately(label, fn); return end
+	local ok, err = pcall(fn, cx)
+	if not ok and problem ~= tostring(err) then report(cx, err) end
+end
+
 -- Asks for a draw soon, in a callback of its own; requests made before the
--- draw runs share it.
+-- draw runs share it. While the timer hook is paused, the first request in a
+-- callback draws at once; later ones wait for the queued draw.
 local drawQueued = false
-local function redraw(_cx)
-	if drawQueued then return end
-	drawQueued = true
-	budget.later("draw", 0, function(cx)
-		drawQueued = false
-		if not cx then return end
+local drawnIn = setmetatable({}, { __mode = "k" })
+local function redraw(cx)
+	if cx and timerPaused() and not drawnIn[cx] then
+		drawnIn[cx] = true
 		local ok, err = pcall(draw, cx)
 		if not ok and problem ~= tostring(err) then report(cx, err) end
+	end
+	if drawQueued then return end
+	drawQueued = true
+	budget.later("draw", 0, function(nextCx)
+		drawQueued = false
+		if not nextCx then return end
+		local ok, err = pcall(draw, nextCx)
+		if not ok and problem ~= tostring(err) then report(nextCx, err) end
 	end)
 end
 
@@ -841,6 +870,17 @@ local function reconcileGone(cx, project, entry)
 	if pruned then tern.kv.set("rails", rails) end
 end
 
+-- Periodic refreshes wait at least this many times the slowest last listing,
+-- up to LISTING_SPACING_MAX_MS: `wt list` in a large repository costs seconds
+-- of CPU, which slows every other program, Tern included.
+local LISTING_SPACING = 20
+local LISTING_SPACING_MAX_MS = 120000
+local function listingCost()
+	local slowest = 0
+	for _, entry in cache do slowest = math.max(slowest, entry.listMs or 0) end
+	return math.min(slowest * LISTING_SPACING, LISTING_SPACING_MAX_MS)
+end
+
 -- `done` runs once every worktree listing this call started has finished.
 local function refresh(cx, done)
 	lastRefresh = tern.now()
@@ -856,8 +896,9 @@ local function refresh(cx, done)
 			entry.loading = true
 			pending += 1
 			refreshLinks(project, entry)
+			local started = tern.now()
 			wt.list(project, function(worktrees, err, nextCx)
-				entry.loading, entry.error = false, err
+				entry.loading, entry.error, entry.listMs = false, err, tern.now() - started
 				local previous = {}
 				for _, tree in entry.worktrees do previous[tree.path] = tree.head end
 				if worktrees then entry.worktrees = worktrees end
@@ -1928,20 +1969,19 @@ local function beginRemoval(cx, request)
 	wt.validate_removal(project, request.worktree, function(worktree, err, nextCx)
 		if not current(nextCx) then return end
 		if not worktree then failed(nextCx, err); return end
-		if request.force or not worktree.dirty then launch(nextCx, worktree, request.force); return end
-		-- A sub-worktree deleted along with its parent never loses work: keep it.
-		if request.keepIfDirty then
-			removalChecks[request.path] = nil
-			nextCx:toast("info", "Kept sub-worktree", notificationLabel(request.label) .. " has uncommitted changes")
-			redraw(nextCx)
-			return
-		end
+		if request.force then launch(nextCx, worktree, true); return end
 		wt.local_changes(worktree.path, function(changes, changesError, changesCx)
 			if not current(changesCx) then return end
 			if not changes then failed(changesCx, changesError); return end
-			-- Clean again by now: the helper still refuses if that changes before it runs.
+			-- Clean: the helper still refuses if that changes before it runs.
 			if changes.total == 0 then launch(changesCx, worktree, false); return end
 			removalChecks[request.path] = nil
+			-- A sub-worktree deleted along with its parent never loses work: keep it.
+			if request.keepIfDirty then
+				changesCx:toast("info", "Kept sub-worktree", notificationLabel(request.label) .. " has uncommitted changes")
+				redraw(changesCx)
+				return
+			end
 			request.worktree, request.changes, request.force = table.clone(worktree), changes, true
 			confirmation = request
 			redraw(changesCx)
@@ -2696,10 +2736,10 @@ local function openSettings(cx)
 	if not cx:new_block(SETTINGS_BLOCK, {}, "tab") then report(cx, "Couldn't open Overseer Settings.", "Settings") end
 end
 
--- Commands, like clicks, only queue their work.
+-- Commands, like clicks, only queue their work (see userAction).
 local function command(id, title, icon, keys, run)
-	tern.command({ id = id, title = title, icon = icon, keys = keys, run = function(_cx)
-		separately("command " .. id, run)
+	tern.command({ id = id, title = title, icon = icon, keys = keys, run = function(cx)
+		userAction("command " .. id, run, cx)
 	end })
 end
 command("projects", "Show or hide Projects", "branch", { "cmd+alt+shift+p" }, togglePanel)
@@ -2932,12 +2972,12 @@ for _, act in {
 	"make-lead", "brief-children", "create-child", "coordination-on", "coordination-off", "open-branch", "restore-project", "update",
 } do CANVAS_ACTIONS[act] = true end
 
--- Clicks only queue their work: an overrun here would pause the hook and
--- swallow clicks until the pause ends, so it must stay too small to trip.
-tern.on("canvas_action", function(ev, _cx)
+-- Clicks only queue their work (see userAction): an overrun here would pause
+-- the hook and swallow clicks until the pause ends.
+tern.on("canvas_action", function(ev, cx)
 	if not CANVAS_ACTIONS[ev.act] then return false end
 	ensureTicking("click")
-	separately("click " .. ev.act, function(nextCx) canvasAction(ev, nextCx) end)
+	userAction("click " .. ev.act, function(nextCx) canvasAction(ev, nextCx) end, cx)
 	return true
 end)
 
@@ -2998,8 +3038,6 @@ local TICK_MS = 750
 local TICK_STALL_MS = 5000
 local tickGeneration = 0
 local lastTick = tern.now()
--- When Tern paused the timer hook, until when (tern.now() ms); 0 when running.
-local timerPausedUntil = 0
 local tick
 local settingsRev = tern.kv.get("settings-rev")
 
@@ -3037,8 +3075,18 @@ tick = function(generation, cx)
 	watchForms()
 	separately("job check", checkJobs)
 	separately("creation progress", trackCreations)
-	-- A hidden panel still refreshes, more slowly: the rails relay from what it knows.
-	local interval = if #cx.canvas:list() > 0 then 15000 else 60000
+	-- In case an agent_state event was missed (see listAgents).
+	if tern.now() - agentsListedAt >= AGENT_RECONCILE_MS then
+		agentsListedAt = tern.now()
+		separately("agents", function(nextCx)
+			listAgents(nextCx, nextCx.session:panes())
+			redraw(nextCx)
+		end)
+	end
+	-- A hidden panel still refreshes, more slowly: the rails relay from what it
+	-- knows. A slow listing (`wt list` reads every worktree's status: seconds of
+	-- CPU in a large repository) spaces refreshes further apart.
+	local interval = math.max(if #cx.canvas:list() > 0 then 15000 else 60000, listingCost())
 	if tern.now() - lastRefresh >= interval then
 		lastRefresh = tern.now()
 		separately("refresh", refresh)
@@ -3065,25 +3113,54 @@ ensureTicking = function(source)
 	return true
 end
 
--- A second clock, outside the timer hook: a short process every 5 s. When the
--- tick turns out to be overdue it is restarted. While timers can't run (the
--- tick was overdue, or Tern paused the timer hook, which doubles to minutes on
+-- A second clock, outside the timer hook: one long-lived process prints a
+-- line every CLOCK_S, and each line runs in the process hook. When the tick
+-- turns out to be overdue it is restarted. While timers can't run (the tick
+-- was overdue, or Tern paused the timer hook, which doubles to minutes on
 -- repeat trips), this clock finishes jobs whose receipts are in and keeps the
 -- panel in the shown tab, so neither waits for timers to come back.
-local function processClock()
-	local ok = pcall(budget.process, "clock", { "/bin/sleep", "5" }, { timeout_ms = 15000 }, function(_result, cx)
-		processClock()
-		if not cx or not localHost(cx) then return end
-		local restarted = ensureTicking("the process clock")
-		if restarted or tern.now() < timerPausedUntil then
-			checkJobs(cx, true)
-			local followed, err = pcall(follow, cx)
-			if not followed then tern.log.warn("Projects panel: " .. tostring(err)) end
-		end
-	end)
-	-- Can't start a process (shouldn't happen): events still check the tick.
-	if not ok then tern.log.warn("Overseer: the process clock could not start") end
+-- `unload` stops it; it also ends itself after CLOCK_LINES lines and is
+-- started again, so a copy a reload failed to stop doesn't run on for long.
+local CLOCK_S, CLOCK_LINES = 5, 720
+local clock = nil
+local unloading = false
+
+local function onClock(cx)
+	if not cx or not localHost(cx) then return end
+	local restarted = ensureTicking("the process clock")
+	if restarted or timerPaused() then
+		checkJobs(cx, true)
+		local followed, err = pcall(follow, cx)
+		if not followed then tern.log.warn("Projects panel: " .. tostring(err)) end
+	end
 end
+
+local function startClock()
+	local started = tern.now()
+	local script = string.format('i=0; while [ "$i" -lt %d ]; do sleep %d; echo tick; i=$((i+1)); done', CLOCK_LINES, CLOCK_S)
+	local ok, child = pcall(tern.process.spawn, { "/bin/sh", "-c", script }, {
+		stdout = function(_line, cx)
+			local ran, err = pcall(onClock, cx)
+			if not ran then tern.log.warn("Overseer: clock failed: " .. tostring(err)) end
+		end,
+		exit = function(result)
+			clock = nil
+			if unloading then return end
+			-- One that dies at once would only die again: events still check the tick.
+			if tern.now() - started < CLOCK_S * 1000 then
+				tern.log.warn("Overseer: the process clock stopped (status " .. tostring(result.status) .. ")")
+				return
+			end
+			startClock()
+		end,
+	})
+	if ok then clock = child else tern.log.warn("Overseer: the process clock could not start: " .. tostring(child)) end
+end
+
+tern.on("unload", function()
+	unloading = true
+	if clock then clock:kill() end
+end)
 
 tern.on("window_start", function(_cx)
 	separately("refresh", refresh)
@@ -3139,7 +3216,7 @@ tern.on("budget", function(ev, _cx)
 end)
 -- Timers are restarted on reload; window_start intentionally is not.
 scheduleTick(tickGeneration)
-processClock()
+startClock()
 -- Every load, so a fresh install or an upgrade to a new plugin dir links omp to this copy.
 budget.later("omp link", 0, function() omplink.ensure() end)
 -- 2.1's self-reload cooldown; nothing reads it any more.
