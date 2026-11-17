@@ -2,6 +2,16 @@
 
 What changed in each Overseer release, newest first. Settings › Help & Diagnostics › Changelog shows the same.
 
+## 2.6.1 (2026-11-17)
+
+### Changed
+
+- Drawing the Projects panel takes well under half the time: about 5 ms instead of 12 in a test window with 16 worktrees and 32 tabs. Busy windows took 35–55 ms, close to the limit past which Tern pauses Overseer's timers. The panel looks and behaves the same
+
+### Fixed
+
+- A session closed from another window or with `tern kill session` shows as closed in Projects at once, instead of up to 5 s later
+
 ## 2.6.0 (2026-11-17)
 
 ### Fixed
