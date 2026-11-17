@@ -2,6 +2,12 @@
 
 What changed in each Overseer release, newest first. Settings › Help & Diagnostics › Changelog shows the same.
 
+## 2.6.0 (2026-11-17)
+
+### Fixed
+
+- The Projects panel's scrollbar runs along its right edge instead of over the header's buttons and the rows' icons
+
 ## 2.5.3 (2026-11-17)
 
 ### Fixed

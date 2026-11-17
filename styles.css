@@ -9,6 +9,17 @@
   color: var(--t1);
   font: 400 13px/18px var(--sans);
 }
+/* The canvas's main region scrolls the panel. Tern insets the canvas
+   (`.tv-cover`) by --tv-px on each side and clips it, so the overlay scrollbar
+   sat over the header's buttons and the rows' links. Running the cover to the
+   pane's right edge puts the scrollbar there; the same padding inside the
+   region keeps the content where it was. */
+.tv-cover:has(> .sf-main > [data-role='overseer.navigator']) {
+  right: 0;
+}
+.sf-main:has(> [data-role='overseer.navigator']) {
+  padding-right: var(--tv-px);
+}
 [data-role='overseer.header'],
 [data-role='overseer.projectHeader'] {
   align-items: center;
