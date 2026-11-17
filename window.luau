@@ -3166,8 +3166,10 @@ tern.on("window_start", function(_cx)
 	separately("refresh", refresh)
 	followSoon()
 end)
--- Every tab, pane and focus change moves the panel into the shown tab.
-for _, name in { "focus", "tab_created", "tab_closed", "pane_created", "pane_closed" } do
+-- Every tab, pane and focus change moves the panel into the shown tab. A
+-- session ended by another window or `tern kill session` fires no
+-- pane_closed here, only session_ended.
+for _, name in { "focus", "tab_created", "tab_closed", "pane_created", "pane_closed", "session_ended" } do
 	tern.on(name, function(_ev, _cx)
 		ensureTicking(name)
 		followSoon()
