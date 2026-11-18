@@ -102,7 +102,7 @@ You get the branch, its session and an omp agent already reading the ticket.
 
 A task's worktree can own the worktrees of its sub-tasks. Agents create them for you, or use **Create sub-worktree…** or **Move under…** on a worktree's menu. Each has its own session, PR and ticket, folded under the task with **▾ N**.
 
-Turn on **agent coordination** from a project's right-click menu and their agents stay in touch: the task's agent is woken when a sub-task's agent needs an answer, fails or opens a PR, sub-tasks hear when the task's branch moves, and **Brief sub-worktrees…** messages them all. omp agents also hear their family's news before every prompt and can message each other. Messages only inform; they never trigger actions. It's off until you turn it on, per repository.
+Turn on **agent coordination** from a project's right-click menu and their agents stay in touch: the task's agent is woken when a sub-task's agent needs an answer, fails or opens a PR, and sub-tasks hear when the task's branch moves. omp agents also hear their family's news before every prompt and can message each other. Messages only inform; they never trigger actions. It's off until you turn it on, per repository.
 
 ## Visualize a PR
 
@@ -129,7 +129,7 @@ Worktrunk owns the worktrees, Tern owns the sessions, and Overseer never deletes
 
 - **"Worktrunk (wt) was not found".** Run `brew install worktrunk`. Overseer looks on Tern's PATH, then in `/opt/homebrew/bin`, `/usr/local/bin`, `~/.bun/bin` and `~/.local/bin`.
 - **No PR badges.** Sign in with `gh auth login`. Badges only show for repositories whose `origin` is on GitHub.
-- **No ticket links.** Sign in with `linear auth login`, or pick a workspace with **Set Linear workspace…** on the project's right-click menu. The branch name needs a ticket ID such as `ENG-123`.
+- **No ticket links.** Sign in with `linear auth login`, or pick a workspace for the project in Settings. The branch name needs a ticket ID such as `ENG-123`.
 - **A new worktree says "needs you?".** Setup is asking a question, usually a Worktrunk hook approval. Click the row, or **Answer** on its notification, to answer it.
 - **Agents in a task don't hear from each other.** Turn on **agent coordination** from the project's right-click menu. omp sessions started before Overseer linked its omp side need `/new`.
 - **Anything else.** **Show Overseer's operation log** in the command palette shows what Overseer did and how it ended, newest first, over the tab you're in. If that doesn't explain it, [open an issue](https://github.com/mmnavarr/overseer/issues/new/choose) with your Tern and Worktrunk versions.

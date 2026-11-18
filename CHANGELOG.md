@@ -2,6 +2,25 @@
 
 What changed in each Overseer release, newest first. Settings › Help & Diagnostics › Changelog shows the same.
 
+## 2.6.2 (2026-11-18)
+
+### Changed
+
+- **New worktree** and **Create sub-worktree…** open a page in a tab of their own, like Settings, instead of taking the Projects panel's place. **Create worktree** (or ↵) starts it and takes you back to the tab you were in; **Cancel** or Esc just closes the page. Nothing about an unfinished page is kept
+- **Rename…** asks for the name in Tern's prompt over the panel
+- A project's base branch and Linear workspace are set in Settings: **Project settings…** on the project's menu opens it
+
+### Removed
+
+- **Brief sub-worktrees…**. Agents can still brief the sub-worktrees they create
+- **Change base branch…** and **Set Linear workspace…** on the project's menu (in Settings)
+
+### Fixed
+
+- Creating a worktree, going back and renaming work while Tern has paused Overseer's timers. Before, the form sat on **Returning to Projects…** or **Working…** until the pause ended, up to 5 minutes after repeated pauses
+- Overseer no longer checks for an open form's answer ten times a second, one less way to run into those pauses
+- Leftover form records from earlier versions are cleared from Overseer's data
+
 ## 2.6.1 (2026-11-17)
 
 ### Changed
