@@ -9,7 +9,6 @@ local Prefs = require("./prefs")
 local update = require("./update")
 
 local cache = {}
-local inflight = {}
 -- Helper liveness probes: job id -> true while `kill -0` runs; dead[id] once it failed.
 local probing, dead = {}, {}
 local rendered = {}
@@ -28,8 +27,6 @@ local sequence = 0
 -- The Linear CLI's workspace, for projects without one of their own: nil until
 -- looked up, false when unavailable (↻ tries again).
 local linearDefault
--- Defined after forms(); openForm starts it.
-local watchForms
 -- Defined with the coordination rails; refreshes call them.
 local railsAfterListing, railsAfterLinks, railsAfterPullRequests, railsAfterSwitch
 -- Defined with the tick; every event checks it.
@@ -641,15 +638,16 @@ local function isNavigator(canvas)
 	return canvas.owner == "overseer" and canvas.title == NAVIGATOR.title
 end
 
--- The window's one Projects slot: the navigator canvas, or a form shown in its
--- place. Adopts what a reload (or an older, per-session version) left open and
--- closes any extra, so a window never shows two.
+-- The window's one Projects slot: the navigator canvas. Adopts what a reload
+-- (or an older, per-session version) left open and closes any extra, so a
+-- window never shows two. Overseer 2's forms took the panel's place; any a
+-- restart brought back are closed.
 local slotPane = nil
 local function slot(cx)
 	if slotPane and not cx.session:pane(slotPane) then slotPane = nil end
 	local found = {}
 	for _, pane in cx.session:panes() do
-		if pane.block == "overseer.form" then table.insert(found, pane.pane) end
+		if pane.block == "overseer.form" then cx.layout:close(pane.pane) end
 	end
 	for _, canvas in cx.canvas:list() do
 		if isNavigator(canvas) and cx.session:pane(canvas.pane) then table.insert(found, canvas.pane) end
@@ -661,9 +659,7 @@ local function slot(cx)
 			rendered[pane] = nil
 		end
 	end
-	if not slotPane then return nil end
-	local info = cx.session:pane(slotPane)
-	return slotPane, if info and info.block == "overseer.form" then "form" else "canvas"
+	return slotPane
 end
 
 -- Slow draws trip Tern's budget and pause every timer (see budget.luau), so
@@ -673,8 +669,8 @@ local slowDrawLogged = -60000
 
 local function draw(cx)
 	local started = tern.now()
-	local pane, kind = slot(cx)
-	if not pane or kind ~= "canvas" then return end
+	local pane = slot(cx)
+	if not pane then return end
 	-- A just-opened canvas only accepts updates once canvas:list() reports it.
 	local ready = false
 	for _, canvas in cx.canvas:list() do
@@ -1037,9 +1033,10 @@ local function shownTab(cx)
 	return focused and cx.session:tab_of(focused)
 end
 
--- The Settings block (settings.luau) opens in a tab of its own, which the
--- panel leaves alone: Settings gets the whole tab.
+-- Settings (settings.luau) and the New worktree page (host.luau) open in tabs
+-- of their own, which the panel leaves alone: each gets the whole tab.
 local SETTINGS_BLOCK = "overseer.settings"
+local PAGE_BLOCK = "overseer.new-worktree"
 local function settingsPane(cx)
 	for _, pane in cx.session:panes() do
 		if pane.block == SETTINGS_BLOCK then return pane end
@@ -1047,20 +1044,21 @@ local function settingsPane(cx)
 	return nil
 end
 
-local function settingsTab(cx, tab)
-	local pane = settingsPane(cx)
-	return pane ~= nil and pane.tab == tab
+local function pageTab(cx, tab)
+	for _, pane in cx.session:panes() do
+		if pane.tab == tab and (pane.block == SETTINGS_BLOCK or pane.block == PAGE_BLOCK) then return true end
+	end
+	return false
 end
 
 -- A toast with a button (Tern 0.9.14). Only a toast node drawn in a view can
--- carry one, so it goes through the Projects panel; with the panel hidden or
--- a form in its place, it is a plain toast and `hint` takes the button's
--- place in `sub`. `button` is { label, action, hint? }; its click arrives as
--- an ordinary canvas action.
+-- carry one, so it goes through the Projects panel; with the panel hidden, it
+-- is a plain toast and `hint` takes the button's place in `sub`. `button` is
+-- { label, action, hint? }; its click arrives as an ordinary canvas action.
 local noticeCount = 0
 local function notify(cx, level, text, sub, button)
-	local pane, kind = slot(cx)
-	local shown = pane ~= nil and kind == "canvas" and cx.session:tab_of(pane) == shownTab(cx)
+	local pane = slot(cx)
+	local shown = pane ~= nil and cx.session:tab_of(pane) == shownTab(cx)
 	if not button or not shown then
 		local hint = button and button.hint
 		cx:toast(level, text, if hint then (if sub then sub .. ". " .. hint else hint) else sub)
@@ -1116,7 +1114,7 @@ local function follow(cx, tab)
 	if not localHost(cx) then return end
 	tab = tab or shownTab(cx)
 	if not tab then return end
-	if settingsTab(cx, tab) then return end
+	if pageTab(cx, tab) then return end
 	local pane = slot(cx)
 	if not pane then
 		if not wantPanel then return end
@@ -1146,19 +1144,6 @@ local function follow(cx, tab)
 	pin(cx, tab)
 end
 
--- Swaps `slot` for a new pane in the same place and size: Tern has no in-place
--- replace for canvases, so open the new pane beside the old one (splitting only
--- that slot), then close the old one so the new pane inherits the whole slot.
-local function swapSlot(cx, old, open)
-	cx.layout:focus(old)
-	local pane, err = open()
-	if not pane then return nil, err end
-	cx.layout:close(old)
-	rendered[old] = nil
-	slotPane = pane
-	return pane
-end
-
 -- Shows the Projects panel in the shown tab and focuses it, opening it if needed.
 local function navigator(cx)
 	if not requireLocal(cx) then return nil end
@@ -1179,8 +1164,8 @@ end
 -- The Projects shortcut: hides the panel when it has focus, otherwise shows and focuses it.
 local function togglePanel(cx)
 	if not requireLocal(cx) then return end
-	local pane, kind = slot(cx)
-	if pane and kind == "canvas" and cx.session:focused() == pane then
+	local pane = slot(cx)
+	if pane and cx.session:focused() == pane then
 		setWantPanel(false)
 		cx.layout:close(pane)
 		rendered[pane] = nil
@@ -1577,24 +1562,6 @@ local function makeLead(cx, path, tabId)
 		if not ok and nextCx then report(nextCx, err, "Couldn't save the overseer session") end
 		if nextCx then flushRails(nextCx) end
 	end)
-end
-
--- Sends your message from the Brief sub-worktrees form to every sub-worktree of `path`.
-local function briefChildren(cx, path, message)
-	local project, worktree = findWorktree(path)
-	if not project then return nil, "Worktree is no longer available. Refresh Projects." end
-	if not coordinating(project) then return nil, "Agent coordination is off for this repository. Turn it on from the project's menu." end
-	local entry = cache[project.id]
-	local ownerOf, sent = owners(entry), 0
-	for _, tree in entry.worktrees do
-		if ownerOf[tree.path] == path then
-			tell(cx, tree.path, "Overseer, passing on a message from the user to every sub-worktree of "
-				.. (worktree.branch or path) .. ":\n\n" .. message, true)
-			sent += 1
-		end
-	end
-	if sent == 0 then return nil, "This worktree has no sub-worktrees." end
-	return sent
 end
 
 -- Messages agents leave for their relatives (the overseer_family tool): one
@@ -2128,79 +2095,53 @@ local function requestWorktreeAction(cx, kind, path)
 	})
 end
 
--- Forms take the Projects panel's place, like a page within it, and follow you
--- the same way; finishing or going back puts the panel back.
-local function openForm(cx, mode, project, worktree)
+-- The New worktree page (host.luau) in a tab of its own. One at a time: a new
+-- one replaces any other. Closing it goes back to the tab it was opened from
+-- (in memory: after a reload, Tern picks the tab).
+local pageReturn = {}
+local function openNewWorktree(cx, project, parent)
 	if not requireLocal(cx) then return end
-	if worktree and removing(worktree.path) then report(cx, "This worktree is being deleted."); return end
-	local current, kind = slot(cx)
-	if kind == "form" then
-		cx.layout:focus(current)
-		cx:toast("info", "Form already open", "Finish it or go back to Projects.")
-		return
-	end
-	if not current then
-		-- Opening the panel and swapping it in one callback risks Tern's 50 ms budget.
-		if not navigator(cx) then return end
-		budget.later("open form", 0, function(nextCx)
-			if nextCx and slot(nextCx) then openForm(nextCx, mode, project, worktree) end
-		end)
-		return
-	end
-	local id = token()
-	local names = worktree and records("worktree-names")[project.id]
-	local label = worktree and (names and names[worktree.path] or worktree.branch or "Detached HEAD")
-	local args = if mode == "child" then { id, mode, project.name, project.base, label }
-		else {
-			id, mode,
-			if worktree then worktree.branch or "Detached HEAD" else project and project.name or "",
-			if worktree then names and names[worktree.path] or ""
-				elseif mode == "linear" then project.linear or ""
-				else project and project.base or "",
-		}
-	local pane = swapSlot(cx, current, function()
-		return cx:new_block("overseer.form", args, "beside")
-	end)
-	if not pane then report(cx, "Reload the Overseer plugin.", "Form unavailable"); return end
-	tern.kv.set("pending-form:" .. tostring(pane), {
-		token = id, mode = mode, project = project and project.id, path = worktree and worktree.path,
-	})
-	watchForms()
-end
-
-local function rejectForm(cx, pane, err)
-	inflight[pane] = nil
-	local request = tern.kv.get("pending-form:" .. tostring(pane))
-	if request then
-		request.response = nil
-		tern.kv.set("pending-form:" .. tostring(pane), request)
-	end
-	if cx.session:pane(pane) then
-		cx.session:event(pane, { ev = "action", act = "retry", value = tostring(err) })
-	else
-		report(cx, err)
-	end
-end
-
--- Puts the Projects panel back in the form's place. The form's record goes
--- last: if Tern cuts this callback short, the next form check finds the
--- record and finishes again.
-local function finishForm(cx, pane)
-	if cx.session:pane(pane) then
-		local data = model(cx)
-		local navigatorPane = swapSlot(cx, pane, function()
-			return cx.canvas:open({
-				title = NAVIGATOR.title, about = NAVIGATOR.about, view = view.render(data), how = "beside",
-			})
-		end)
-		if navigatorPane then
-			rendered[navigatorPane] = tern.json.encode(data)
-		else
-			cx.layout:close(pane)
+	if parent and removing(parent.path) then report(cx, "This worktree is being deleted."); return end
+	local from = shownTab(cx)
+	for _, pane in cx.session:panes() do
+		if pane.block == PAGE_BLOCK then
+			if pane.tab == from then from = pageReturn[pane.pane] end
+			pageReturn[pane.pane] = nil
+			cx.layout:close(pane.pane)
 		end
 	end
-	tern.kv.set("pending-form:" .. tostring(pane), nil)
-	inflight[pane] = nil
+	local args = { project.id }
+	if parent then
+		local names = records("worktree-names")[project.id]
+		args = { project.id, parent.path, parent.branch, names and names[parent.path] or parent.branch }
+	end
+	local pane = cx:new_block(PAGE_BLOCK, args, "tab")
+	if not pane then report(cx, "Reload the Overseer plugin.", "Couldn't open New worktree"); return end
+	pageReturn[pane] = from
+end
+
+local function closePage(cx, pane)
+	local tab = cx.session:tab_of(pane)
+	local back = pageReturn[pane]
+	pageReturn[pane] = nil
+	if tab == shownTab(cx) then
+		-- Back where you were; after a reload or restart, to another tab.
+		if not back or back == tab or not cx.session:layout(back) then
+			back = nil
+			for _, info in cx.session:tabs() do
+				if info.id ~= tab then back = info.id; break end
+			end
+		end
+		local layout = back and cx.session:layout(back)
+		local target = layout and firstLeaf(layout.root, slotPane)
+		if target then cx.layout:focus(target) end
+	end
+	cx.layout:close(pane)
+end
+
+-- Shows `err` on the page, which stays open to fix it.
+local function pageError(cx, pane, err)
+	cx.session:event(pane, { ev = "action", act = "retry", value = tostring(err) })
 end
 
 -- AppleScript for macOS's native folder picker; the start folder arrives as an
@@ -2289,17 +2230,6 @@ function pickProject(cx)
 	end)
 end
 
--- Display names are single-line labels for the Projects panel; blank means
--- "use the branch name".
-local function normalizeName(raw)
-	if raw == nil then return nil end
-	if type(raw) ~= "string" or raw:find("[%c]") then
-		return nil, "Use a single-line display name without control characters."
-	end
-	local name = raw:match("^%s*(.-)%s*$")
-	return if name == "" then nil else name
-end
-
 -- Starts Worktrunk's creation of `job.branch` in a background tab and records
 -- `job` for checkJobs. Returns an error message instead when it cannot start.
 local function launchCreation(cx, project, job)
@@ -2325,107 +2255,47 @@ local function launchCreation(cx, project, job)
 	return nil
 end
 
--- A "child" form creates a sub-worktree of the worktree it was opened on.
-local function createWorktree(cx, pane, request, response)
-	local project = projectById(request.project)
-	if not project then rejectForm(cx, pane, "Project is no longer registered."); return end
-	local displayName, nameError = normalizeName(response.name)
-	if nameError then rejectForm(cx, pane, nameError); return end
-	local parent
-	if request.mode == "child" then
-		local owner, worktree = findWorktree(request.path)
-		if not owner or owner.id ~= project.id or not worktree.branch or removing(request.path) then
-			rejectForm(cx, pane, "The parent worktree is no longer available. Refresh Projects."); return
-		end
-		parent = worktree.branch
-	end
-	wt.validate(project, response.branch, function(ok, err, nextCx)
-		if not nextCx then return end
-		if not nextCx.session:pane(pane) then finishForm(nextCx, pane); return end
-		if not ok then rejectForm(nextCx, pane, err); return end
-		local launchError = launchCreation(nextCx, project, { branch = response.branch, displayName = displayName, parent = parent })
-		if launchError then rejectForm(nextCx, pane, launchError); return end
-		-- Never launched twice: finishing again after a cut-short callback skips this.
-		request.launched = true
-		tern.kv.set("pending-form:" .. tostring(pane), request)
-		separately("finish form", function(finishCx) finishForm(finishCx, pane) end)
-		nextCx:toast("info", "Creating worktree", notificationLabel(displayName or response.branch))
+-- The page checked the branch name; this starts the creation. A sub-worktree's
+-- parent branch comes from the page, so a refresh still under way after a
+-- reload can't lose it.
+local function createFromPage(cx, pane, fields)
+	local project = projectById(fields.project)
+	if not project then pageError(cx, pane, "This project is no longer in Projects."); return end
+	if type(fields.branch) ~= "string" or fields.branch == "" then pageError(cx, pane, "Enter a branch name."); return end
+	local displayName, nameError = Prefs.displayName(fields.name)
+	if nameError then pageError(cx, pane, nameError); return end
+	if fields.parent and removing(fields.parent) then pageError(cx, pane, "The parent worktree is being deleted."); return end
+	local launchError = launchCreation(cx, project, {
+		branch = fields.branch, displayName = displayName, parent = fields.parent and fields.parentBranch,
+	})
+	if launchError then pageError(cx, pane, launchError); return end
+	closePage(cx, pane)
+	cx:toast("info", "Creating worktree", notificationLabel(displayName or fields.branch))
+	redraw(cx)
+end
+
+-- Rename: Tern's prompt over the focused pane, starting from the current name.
+-- Blank goes back to the branch name.
+local function renameWorktree(cx, path)
+	local project, worktree = findWorktree(path)
+	if not project then report(cx, "Worktree not found. Refresh Projects."); return end
+	if removing(path) then report(cx, "This worktree is being deleted."); return end
+	local branch = worktree.branch or "Detached HEAD"
+	local current = (records("worktree-names")[project.id] or {})[path]
+	cx:prompt({
+		value = current or "", icon = "pen", action = "rename",
+		placeholder = "Display name for " .. branch .. " (blank shows the branch)",
+	}):next(function(text, _err, nextCx)
+		if text == nil or not nextCx then return end
+		local name, nameError = Prefs.displayName(text)
+		if nameError then report(nextCx, nameError); return end
+		local names = records("worktree-names")
+		names[project.id] = names[project.id] or {}
+		names[project.id][path] = name
+		tern.kv.set("worktree-names", names)
+		nextCx:toast("info", if name == nil then "Branch label restored" else "Worktree renamed", notificationLabel(name or branch))
 		redraw(nextCx)
 	end)
-end
-
-local function renameWorktree(cx, pane, request, response)
-	local project, worktree = findWorktree(request.path)
-	if not project or project.id ~= request.project or not tern.fs.exists(request.path) then
-		rejectForm(cx, pane, "Worktree is no longer available. Refresh Projects."); return
-	end
-	if removing(request.path) then rejectForm(cx, pane, "This worktree is being deleted."); return end
-	local name, nameError = normalizeName(response.name)
-	if nameError then rejectForm(cx, pane, nameError); return end
-	local names = records("worktree-names")
-	names[project.id] = names[project.id] or {}
-	names[project.id][worktree.path] = name
-	tern.kv.set("worktree-names", names)
-	finishForm(cx, pane)
-	cx:toast("info", if name == nil then "Branch label restored" else "Worktree renamed",
-		notificationLabel(name or worktree.branch or "Detached HEAD"))
-	redraw(cx)
-end
-
--- New worktrees branch from the project's base; only an existing local branch is accepted.
-local function changeBase(cx, pane, request, response)
-	local project = projectById(request.project)
-	if not project then rejectForm(cx, pane, "Project is no longer registered."); return end
-	local base = type(response.base) == "string" and response.base:match("^%s*(.-)%s*$") or ""
-	if base == "" or base:find("[%c%s]") or base:sub(1, 1) == "-" then
-		rejectForm(cx, pane, "Enter a local branch name, such as main."); return
-	end
-	wt.spawn({ "git", "-C", project.path, "show-ref", "--verify", "--quiet", "refs/heads/" .. base },
-		{ timeout_ms = 15000 }, function(result, nextCx, startErr)
-			if not nextCx then return end
-			if not nextCx.session:pane(pane) then finishForm(nextCx, pane); return end
-			if not result then rejectForm(nextCx, pane, "Couldn't check the branch: " .. startErr); return end
-			if result.status ~= 0 then
-				rejectForm(nextCx, pane, "No local branch named " .. base .. " in " .. project.name .. ".")
-				return
-			end
-			local all = projects()
-			for _, existing in all do
-				if existing.id == project.id then existing.base = base end
-			end
-			tern.kv.set("projects", all)
-			finishForm(nextCx, pane)
-			nextCx:toast("info", "Base branch changed", notificationLabel(project.name .. " → " .. base))
-			redraw(nextCx)
-		end)
-end
-
--- Accepts a workspace name ("acme") or any link inside it ("https://linear.app/acme/issue/ENG-1").
-local function changeLinear(cx, pane, request, response)
-	local project = projectById(request.project)
-	if not project then rejectForm(cx, pane, "Project is no longer registered."); return end
-	local workspace, invalid = Prefs.linearWorkspace(response.linear)
-	if not workspace then rejectForm(cx, pane, invalid); return end
-	local all = projects()
-	for _, existing in all do
-		if existing.id == project.id then existing.linear = if workspace == "" then nil else workspace end
-	end
-	tern.kv.set("projects", all)
-	finishForm(cx, pane)
-	cx:toast("info", if workspace == "" then "Using the Linear CLI's workspace" else "Linear workspace set", notificationLabel(project.name))
-	redraw(cx)
-end
-
--- Brief sub-worktrees: your message goes to each sub-worktree's overseer
--- session now; one without a session gets it when it starts one.
-local function sendBrief(cx, pane, request, response)
-	local message = type(response.message) == "string" and response.message:match("^%s*(.-)%s*$") or ""
-	if message == "" then rejectForm(cx, pane, "Enter a message."); return end
-	local sent, err = briefChildren(cx, request.path, message)
-	if not sent then rejectForm(cx, pane, err); return end
-	finishForm(cx, pane)
-	cx:toast("info", "Brief sent", "To " .. tostring(sent) .. " sub-worktree" .. (if sent == 1 then "" else "s") .. ".")
-	redraw(cx)
 end
 
 -- The worktree's path is only known once Worktrunk has created it, so the
@@ -2481,71 +2351,31 @@ local function startTicketAgent(job)
 	end)
 end
 
--- Acts on one form's response, in a callback of its own.
-local function answerForm(cx, pane, request, response)
-	if response.cancelled or request.launched then
-		finishForm(cx, pane)
-	elseif (request.mode == "create" or request.mode == "child") and response.mode == request.mode then
-		createWorktree(cx, pane, request, response)
-	elseif request.mode == "rename" and response.mode == "rename" then
-		renameWorktree(cx, pane, request, response)
-	elseif request.mode == "base" and response.mode == "base" then
-		changeBase(cx, pane, request, response)
-	elseif request.mode == "linear" and response.mode == "linear" then
-		changeLinear(cx, pane, request, response)
-	elseif request.mode == "brief" and response.mode == "brief" then
-		sendBrief(cx, pane, request, response)
-	else
-		rejectForm(cx, pane, "Invalid form response. Please try again.")
+local function decodeQuery(query)
+	local fields = {}
+	for key, value in string.gmatch(query, "([^&=]+)=([^&]*)") do
+		fields[key] = (string.gsub(value, "%%(%x%x)", function(hex) return string.char(tonumber(hex, 16)) end))
 	end
+	return fields
 end
 
-local function forms(cx)
-	for _, info in cx.session:panes() do
-		local pane = info.pane
-		if info.block == "overseer.form" and not inflight[pane] then
-			local request = tern.kv.get("pending-form:" .. tostring(pane))
-			if not request then
-				-- A form without its record: Tern cut short the callback that opened
-				-- it. It can never answer, so put Projects back.
-				inflight[pane] = true
-				separately("restore Projects", function(nextCx) finishForm(nextCx, pane) end)
-			else
-				local response = request.response or tern.kv.get("form:" .. request.token)
-				if response then
-					-- Keep validation inputs until completion so a plugin reload can
-					-- resume an in-flight request without leaving a submitted form stuck.
-					request.response = response
-					tern.kv.set("pending-form:" .. tostring(pane), request)
-					tern.kv.set("form:" .. request.token, nil)
-					inflight[pane] = true
-					separately("answer form", function(nextCx) answerForm(nextCx, pane, request, response) end)
-				end
-			end
-		end
+-- The New worktree page asks through links (`tern-overseer:create?…`,
+-- `tern-overseer:close`): the link hook runs while Tern has paused the timer
+-- hook, and userAction then acts in it. Only links opened from the page's own
+-- pane count, so one printed in a terminal does nothing.
+tern.route.link(function(link, cx)
+	local act, query = string.match(link.url, "^tern%-overseer:(%a+)%??(.*)$")
+	if not act then return nil end
+	local info = cx.session:pane(link.pane)
+	if info and info.block == PAGE_BLOCK and (act == "create" or act == "close") then
+		local fields = decodeQuery(query)
+		userAction("page " .. act, function(nextCx)
+			if not nextCx.session:pane(link.pane) then return end
+			if act == "create" then createFromPage(nextCx, link.pane, fields) else closePage(nextCx, link.pane) end
+		end, cx)
 	end
-end
-
--- Forms post their responses through kv, which has no change notification.
--- While one is open, check every 100 ms so Back and Submit feel immediate;
--- the 750 ms tick covers everything else.
-local watching = false
-watchForms = function()
-	if watching then return end
-	watching = true
-	local function step(cx)
-		if not cx then watching = false; return end
-		local open = false
-		for _, pane in cx.session:panes() do
-			if pane.block == "overseer.form" then open = true; break end
-		end
-		if not open then watching = false; return end
-		local ok, err = pcall(forms, cx)
-		if not ok then tern.log.warn("Overseer form check failed: " .. tostring(err)) end
-		budget.later("form check", 100, step)
-	end
-	budget.later("form check", 100, step)
-end
+	return { handled = true }
+end)
 
 -- The helper's receipt is the only authority on an operation's outcome. A
 -- terminal that looks closed or missing is just a hint: Tern can misreport a
@@ -2746,7 +2576,7 @@ command("projects", "Show or hide Projects", "branch", { "cmd+alt+shift+p" }, to
 command("add", "Add project", "folder", nil, pickProject)
 command("create", "Create worktree", "branch", nil, function(cx)
 	local project = activeWorktree(cx)
-	if project then openForm(cx, "create", project) else navigator(cx); cx:toast("info", "Choose a project", "Click + beside a project's name.") end
+	if project then openNewWorktree(cx, project) else navigator(cx); cx:toast("info", "Choose a project", "Click + beside a project's name.") end
 end)
 command("ops-log", "Show Overseer's operation log", "list", nil, showLog)
 command("settings", "Overseer Settings", "gear", nil, openSettings)
@@ -2903,7 +2733,7 @@ local function canvasAction(ev, cx)
 	elseif ev.act == "make-top-level" then makeTopLevel(cx, view.worktreePath(ev.node))
 	elseif ev.act == "create" then
 		local project = projectById(ev.value)
-		if project then openForm(cx, "create", project) end
+		if project then openNewWorktree(cx, project) end
 	elseif ev.act == "open-worktree" then openWorktree(cx, ev.value)
 	elseif ev.act == "icebox-add" or ev.act == "icebox-remove" then
 		local project, worktree = findWorktree(view.worktreePath(ev.node))
@@ -2916,10 +2746,6 @@ local function canvasAction(ev, cx)
 	elseif ev.act == "toggle-icebox" then
 		tern.kv.set("show-icebox", tern.kv.get("show-icebox") == false)
 		redraw(cx)
-	elseif ev.act == "change-base" or ev.act == "set-linear" then
-		local project = projectById(view.projectId(ev.node))
-		if project then openForm(cx, if ev.act == "change-base" then "base" else "linear", project)
-		else report(cx, "Project not found. Refresh Projects.") end
 	elseif ev.act == "remove-project" then
 		requestProjectRemoval(cx, view.projectId(ev.node))
 	elseif ev.act == "coordination-on" then
@@ -2931,18 +2757,12 @@ local function canvasAction(ev, cx)
 	elseif ev.act == "make-lead" then
 		local path, tab = view.tabTarget(ev.node)
 		if path then makeLead(cx, path, tab) else report(cx, "Tab not found. Refresh Projects.") end
-	elseif ev.act == "brief-children" then
-		local project, worktree = findWorktree(view.worktreePath(ev.node))
-		if project then openForm(cx, "brief", project, worktree)
-		else report(cx, "Worktree not found. Refresh Projects.") end
 	elseif ev.act == "create-child" then
 		local project, worktree = findWorktree(view.worktreePath(ev.node))
-		if project then openForm(cx, "child", project, worktree)
+		if project then openNewWorktree(cx, project, worktree)
 		else report(cx, "Worktree not found. Refresh Projects.") end
 	elseif ev.act == "rename" then
-		local project, worktree = findWorktree(view.worktreePath(ev.node))
-		if project then openForm(cx, "rename", project, worktree)
-		else report(cx, "Worktree not found. Refresh Projects.") end
+		renameWorktree(cx, view.worktreePath(ev.node))
 	elseif ev.act == "close-session" then
 		-- From a row's menu, or the Close session button on a toast (`value` is the path).
 		requestWorktreeAction(cx, "close", view.worktreePath(ev.node) or ev.value)
@@ -2967,9 +2787,9 @@ end
 local CANVAS_ACTIONS = {}
 for _, act in {
 	"settings", "add", "refresh", "collapse", "create", "open-worktree", "link", "icebox-add", "icebox-remove",
-	"toggle-icebox", "change-base", "set-linear", "remove-project", "visualize", "rename",
+	"toggle-icebox", "remove-project", "visualize", "rename",
 	"close-session", "delete-worktree", "confirm", "confirm-all", "cancel", "tab", "fold", "move-under", "make-top-level",
-	"make-lead", "brief-children", "create-child", "coordination-on", "coordination-off", "open-branch", "restore-project", "update",
+	"make-lead", "create-child", "coordination-on", "coordination-off", "open-branch", "restore-project", "update",
 } do CANVAS_ACTIONS[act] = true end
 
 -- Clicks only queue their work (see userAction): an overrun here would pause
@@ -3070,9 +2890,6 @@ tick = function(generation, cx)
 			notify(nextCx, "info", "Overseer updated", "Now on " .. updated)
 		end)
 	end
-	separately("form check", forms)
-	-- Resumes fast form checks after a plugin reload left a form open.
-	watchForms()
 	separately("job check", checkJobs)
 	separately("creation progress", trackCreations)
 	-- In case an agent_state event was missed (see listAgents).
@@ -3223,3 +3040,12 @@ startClock()
 budget.later("omp link", 0, function() omplink.ensure() end)
 -- 2.1's self-reload cooldown; nothing reads it any more.
 tern.kv.set("self-reload", nil)
+-- Overseer 2 kept each open form's request and answer in kv; nothing reads them now.
+budget.later("forget forms", 0, function()
+	local read, raw = pcall(tern.fs.read, tern.plugin.data .. "/kv.json", 4194304)
+	local decoded, all = pcall(tern.json.decode, if read then raw else "")
+	if not decoded or type(all) ~= "table" then return end
+	for key in all do
+		if string.find(key, "^pending%-form:") or string.find(key, "^form:") then tern.kv.set(key, nil) end
+	end
+end)

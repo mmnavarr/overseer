@@ -49,6 +49,18 @@ function M.linearWorkspace(raw)
 	return workspace
 end
 
+-- A display name from what was typed: single-line labels for the Projects
+-- panel. Returns the trimmed name, nil for blank ("use the branch name"), or
+-- nil and the reason.
+function M.displayName(raw)
+	if raw == nil then return nil end
+	if type(raw) ~= "string" or raw:find("[%c]") then
+		return nil, "Use a single-line display name without control characters."
+	end
+	local name = raw:match("^%s*(.-)%s*$")
+	return if name == "" then nil else name
+end
+
 -- Setup commands Settings may ask the window to run in a terminal tab
 -- (kv `setup-request`). A request names one of these, never a command line.
 M.SETUP = {

@@ -455,9 +455,13 @@
   font-size: 12px;
 }
 
-/* The form block opens in sans (`font = "sans"`); only its padding is ours. */
-[data-role='overseer.form'] {
-  padding: 16px;
+/* The New worktree page (host.luau): a narrow column in the middle of its tab,
+   under Settings' title style. */
+[data-role='overseer.newWorktree'] {
+  width: 100%;
+  max-width: 560px;
+  margin: 0 auto;
+  padding: 28px 24px 48px;
 }
 
 /* The operation log's glimpse: people's text in the UI face, like the panel,

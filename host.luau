@@ -1,230 +1,166 @@
 local ui = tern.ui
 local Input = require("./input")
+local Prefs = require("./prefs")
+local wt = require("./worktrunk")
 -- The Settings block lives in its own module.
 require("./settings")
 
-local LABELS = {
-	name = "Display name", branch = "Branch name", base = "Base branch", linear = "Workspace URL or name",
-	message = "Message",
-}
-local REQUIRED = { branch = true, base = true, message = true }
+-- The New worktree page: a tab of its own, like Settings. It checks what you
+-- typed itself, here in Tern's host, where Overseer's timers can't hold it up;
+-- the window only opens the setup tab and closes this one, in its link hook
+-- (window.luau's pageLink). Nothing is saved: leaving the page ends it.
 
--- Each input sits in a `field` keyed by its name, so its node id nests.
+local FIELDS = { "branch", "name" }
+
+-- Each input sits in a `field` keyed by its name, so its node id nests (the
+-- root's own key isn't part of it).
 local function inputId(name)
-	return "main.field-" .. name .. "." .. name
-end
-
--- Everything that differs between the form's modes. The first field takes focus.
-local MODES = {
-	create = {
-		heading = "New worktree", submit = "Create worktree", fields = { "branch", "name" },
-		help = function(state)
-			return state.project .. " · New branch from " .. state.base .. ". Worktrunk hooks will run."
-		end,
-	},
-	child = {
-		heading = "New sub-worktree", submit = "Create sub-worktree", fields = { "branch", "name" },
-		help = function(state)
-			return state.project .. " · Under " .. state.parent .. ", new branch from " .. state.base .. ". Worktrunk hooks will run."
-		end,
-	},
-	rename = {
-		heading = "Rename worktree", submit = "Save name", fields = { "name" },
-		help = function(state)
-			return "Display name only. Branch: " .. state.project .. ". Leave blank to use the branch name; Git and the directory stay unchanged."
-		end,
-	},
-	base = {
-		heading = "Change base branch", submit = "Save base branch", fields = { "base" },
-		help = function(state)
-			return state.project .. " · New worktrees branch from this local branch. Existing worktrees are unchanged."
-		end,
-	},
-	linear = {
-		heading = "Linear workspace", submit = "Save workspace", fields = { "linear" },
-		help = function(state)
-			return state.project .. " · Branches that name a ticket, such as feature/ENG-123, link to it in this workspace. Leave blank to use the Linear CLI's workspace."
-		end,
-	},
-	brief = {
-		heading = "Brief sub-worktrees", submit = "Send", fields = { "message" },
-		help = function(state)
-			return "Sends this to the overseer session of every sub-worktree of " .. state.project
-				.. ". One without a session gets it when it starts one."
-		end,
-	},
-}
-
-local function fieldOrder(state)
-	return MODES[state.mode].fields
+	return "main.fields.field-" .. name .. "." .. name
 end
 
 local function focus(state, cx)
-	pcall(function()
-		cx:frame({ { "focus", inputId(state.focus) } })
+	pcall(function() cx:frame({ { "focus", inputId(state.focus) } }) end)
+end
+
+local function encode(text)
+	return (string.gsub(text, "[^%w%-%._~]", function(char)
+		return string.format("%%%02X", string.byte(char))
+	end))
+end
+
+-- Asks the window to act: `tern-overseer:<act>?k=v&…`. The window acts only
+-- on links opened from this block's pane.
+local function tellWindow(state, cx, act, fields)
+	local query = {}
+	for _, key in { "project", "branch", "name", "parent", "parentBranch" } do
+		if fields and fields[key] then table.insert(query, key .. "=" .. encode(fields[key])) end
+	end
+	local url = "tern-overseer:" .. act .. (if #query > 0 then "?" .. table.concat(query, "&") else "")
+	return pcall(function() cx:open(url, if state.window then { window = state.window } else nil) end)
+end
+
+local function projectById(id)
+	local all = tern.kv.get("projects")
+	for _, project in (if type(all) == "table" then all else {}) do
+		if project.id == id then return project end
+	end
+	return nil
+end
+
+local function cancel(state, cx)
+	if not tellWindow(state, cx, "close") then cx:exit(0) end
+end
+
+local function fail(state, message, field)
+	state.busy, state.error, state.errorField = nil, message, field
+	if field then state.focus = field end
+end
+
+local function submit(state, cx)
+	if state.busy then return end
+	local branch = state.fields.branch.text:match("^%s*(.-)%s*$")
+	if branch == "" then fail(state, "Enter a branch name.", "branch"); return end
+	local name, nameError = Prefs.displayName(state.fields.name.text)
+	if nameError then fail(state, nameError, "name"); return end
+	local project = projectById(state.project)
+	if not project then fail(state, "This project is no longer in Projects."); return end
+	state.busy, state.error, state.errorField = "Checking…", nil, nil
+	wt.validate(project, branch, function(ok, err)
+		if not ok then
+			fail(state, err or "Couldn't check the branch name.", "branch")
+		else
+			state.busy = "Creating…"
+			local sent = tellWindow(state, cx, "create", {
+				project = project.id, branch = branch, name = name,
+				parent = state.parent and state.parent.path, parentBranch = state.parent and state.parent.branch,
+			})
+			if not sent then fail(state, "Couldn't reach the Projects panel. Reload the Overseer plugin.") end
+		end
+		pcall(function() cx:render() end)
+		if not state.busy then focus(state, cx) end
 	end)
 end
 
-local function finish(state, cancelled)
-	if state.submitted then
-		return
+local function page(state)
+	local project = projectById(state.project)
+	local base = project and project.base or "the base branch"
+	local help = if state.parent
+		then "Nested under " .. state.parent.label .. ", on a new branch from " .. base .. "."
+		else "On a new branch from " .. base .. "."
+	local placeholders = { branch = "feature/branch-name", name = "e.g. Fix onboarding" }
+	local labels = { branch = "Branch name", name = "Display name" }
+	local fields = {}
+	for _, name in FIELDS do
+		local props = Input.props(state.fields[name])
+		props.key, props.placeholder = name, placeholders[name]
+		table.insert(fields, ui.node("field", {
+			key = "field-" .. name, label = labels[name], required = name == "branch",
+			hint = if name == "name" then "Optional. Shown in Projects instead of the branch." else nil,
+			error = if state.errorField == name then state.error else nil,
+		}, { ui.node("input", props) }))
 	end
-	local response
-	if cancelled then
-		response = { cancelled = true }
-	elseif state.mode == "rename" then
-		response = { mode = "rename", name = state.fields.name.text }
-	elseif state.mode == "base" then
-		if not string.find(state.fields.base.text, "%S") then
-			state.error, state.errorField = "Enter a local branch name.", "base"
-			state.focus = "base"
-			return
-		end
-		response = { mode = "base", base = state.fields.base.text }
-	elseif state.mode == "linear" then
-		response = { mode = "linear", linear = state.fields.linear.text }
-	elseif state.mode == "brief" then
-		if not string.find(state.fields.message.text, "%S") then
-			state.error, state.errorField = "Enter a message.", "message"
-			state.focus = "message"
-			return
-		end
-		response = { mode = "brief", message = state.fields.message.text }
-	else
-		if not string.find(state.fields.branch.text, "%S") then
-			state.error, state.errorField = "Enter a branch name.", "branch"
-			state.focus = "branch"
-			return
-		end
-		response = { mode = state.mode, branch = state.fields.branch.text, name = state.fields.name.text }
+	local children = {
+		ui.node("row", { key = "top", align = "baseline", gap = "sm" }, {
+			ui.node("text", { key = "title", role = "overseer.settingsTitle", text = state.heading }),
+			ui.node("text", { key = "project", spans = { ui.span(if project then project.name else "", "muted") } }),
+		}),
+		ui.node("text", { key = "help", spans = {
+			ui.span(help .. " Worktrunk sets it up in a tab of its own, hooks included.", "muted"),
+		} }),
+		ui.node("col", { key = "fields", gap = "md" }, fields),
+	}
+	-- Errors that belong to no field (Worktrunk's refusal, a gone project) show under the fields.
+	if state.error and not state.errorField then
+		table.insert(children, ui.card("Couldn't create the worktree", {
+			ui.node("text", { key = "message", text = state.error }),
+		}, { key = "error", tone = "error", icon = "warn" }))
 	end
-	local ok, err = pcall(tern.kv.set, "form:" .. state.token, response)
-	if not ok then
-		state.error, state.errorField = "Could not send form: " .. tostring(err), nil
-		return
-	end
-	state.submitted, state.cancelled, state.error, state.errorField = true, cancelled, nil, nil
+	table.insert(children, ui.node("row", { key = "buttons", gap = "sm", justify = "end" }, {
+		ui.button("Cancel", { key = "cancel", variant = "quiet", keys = { "esc" }, actions = { click = "cancel" } }),
+		ui.button(state.busy or state.submitLabel, {
+			key = "submit", variant = "primary", keys = { "enter" }, busy = state.busy ~= nil, actions = { click = "submit" },
+		}),
+	}))
+	return ui.node("col", { key = "page", role = "overseer.newWorktree", gap = "lg" }, children)
 end
 
-tern.block.define("form", {
-	-- People's text in the UI face; inputs stay mono.
+-- args: project id, then for a sub-worktree its parent's path, branch and label.
+tern.block.define("new-worktree", {
 	font = "sans",
-	init = function(_cx, args, saved)
-		local mode = if MODES[args[2]] then args[2] else "create"
-		local state = {
-			token = args[1] or "", mode = mode, project = args[3] or "",
-			base = args[4] or "master", parent = args[5] or "",
-			focus = MODES[mode].fields[1],
-			submitted = false, cancelled = false, focusScheduled = false,
+	init = function(_cx, args, _saved)
+		local parent = if args[2] and args[3]
+			then { path = args[2], branch = args[3], label = args[4] or args[3] }
+			else nil
+		return {
+			project = args[1] or "", parent = parent,
+			heading = if parent then "New sub-worktree" else "New worktree",
+			submitLabel = if parent then "Create sub-worktree" else "Create worktree",
+			fields = { branch = Input.new(""), name = Input.new("") },
+			focus = "branch", focusScheduled = false,
 		}
-		state.fields = {
-			name = Input.new(if mode == "rename" then args[4] or "" else ""),
-			branch = Input.new(""),
-			base = Input.new(if mode == "base" then args[4] or "" else ""),
-			linear = Input.new(if mode == "linear" then args[4] or "" else ""),
-			message = Input.new(""),
-		}
-		if type(saved) == "table" and saved.token == state.token and saved.mode == mode then
-			for name in pairs(state.fields) do
-				if type(saved.fields) == "table" and type(saved.fields[name]) == "string" then
-					state.fields[name] = Input.new(saved.fields[name])
-				end
-			end
-			if state.fields[saved.focus] then
-				state.focus = saved.focus
-			end
-			state.submitted = saved.submitted == true
-			state.cancelled = saved.cancelled == true
-		end
-		-- A restarted form must never publish its response a second time.
-		if state.token == "" then
-			state.error = "Missing form token. Close this pane and reopen the form from Projects."
-			state.submitted = true
-		else
-			local ok, response = pcall(tern.kv.get, "form:" .. state.token)
-			if ok and response ~= nil then
-				state.submitted = true
-				state.cancelled = type(response) == "table" and response.cancelled == true
-			end
-		end
-		return state
 	end,
-	-- The form occupies the Projects panel's slot, so keep the panel's title.
-	title = function()
-		return "Projects"
+	title = function(state)
+		return state.heading
 	end,
 	view = function(state, cx)
-		local heading = MODES[state.mode].heading
-		local children = {
-			ui.node("row", { key = "nav" }, {
-				ui.button("Projects", {
-					key = "back", icon = "back", variant = "quiet", size = "sm", keys = { "esc" },
-					title = "Back to Projects", actions = { click = "cancel" },
-				}),
-			}),
-			ui.node("text", { key = "heading", spans = { ui.span(heading, "title") } }),
-		}
-		if state.submitted then
-			table.insert(children, ui.node("shimmer", {
-				key = "submitted", text = if state.cancelled then "Returning to Projects…" else "Working…",
-			}))
-		else
-			table.insert(children, ui.node("text", { key = "help", spans = { ui.span(MODES[state.mode].help(state), "muted") } }))
-			local placeholders = {
-				name = if state.mode == "rename" then state.project else "e.g. Fix onboarding",
-				branch = "feature/branch-name", base = "main", linear = "https://linear.app/your-team",
-				message = "e.g. The API moved to v2; rebase onto main before opening PRs",
-			}
-			for _, name in ipairs(fieldOrder(state)) do
-				local props = Input.props(state.fields[name])
-				props.key, props.placeholder = name, placeholders[name]
-				table.insert(children, ui.node("field", {
-					key = "field-" .. name, label = LABELS[name], required = REQUIRED[name] == true,
-					hint = if name == "name" then "Optional" else nil,
-					error = if state.errorField == name then state.error else nil,
-				}, { ui.node("input", props) }))
-			end
-			table.insert(children, ui.node("row", { key = "buttons", gap = "sm" }, {
-				ui.button(MODES[state.mode].submit, {
-					key = "submit", variant = "primary", keys = { "enter" }, actions = { click = "submit" },
-				}),
-			}))
-			if #fieldOrder(state) > 1 then
-				table.insert(children, ui.node("text", {
-					key = "keys", spans = { ui.span("tab", "key"), ui.span(" next field", "muted") },
-				}))
-			end
-			if not state.focusScheduled then
-				state.focusScheduled = true
-				-- Timer executes after this view mounts; a closed pane safely ignores focus.
-				tern.timer(30, function()
-					if not state.submitted then
-						focus(state, cx)
-					end
-				end)
-			end
+		if not state.focusScheduled then
+			state.focusScheduled = true
+			-- Runs after this view mounts.
+			tern.timer(30, function() focus(state, cx) end)
 		end
-		-- Errors that belong to no field (a failed send, Worktrunk's refusal) show under the form.
-		if state.error and not state.errorField then
-			table.insert(children, ui.card("Couldn't continue", {
-				ui.node("text", { key = "message", text = state.error }),
-			}, { key = "error", tone = "error", icon = "warn" }))
-		end
-		return { main = ui.node("col", { role = "overseer.form", gap = "md" }, children) }
+		return { main = page(state) }
 	end,
 	key = function(state, key, cx)
-		if state.submitted then
-			return false
-		end
 		if key.name == "escape" or key.name == "esc" then
-			finish(state, true)
+			cancel(state, cx)
+		elseif state.busy then
+			return false
 		elseif key.name == "enter" then
-			finish(state, false)
-			if not state.submitted then focus(state, cx) end
+			submit(state, cx)
+			focus(state, cx)
 		elseif key.name == "tab" then
-			local order = fieldOrder(state)
-			local index = table.find(order, state.focus) or 1
-			state.focus = order[((index - 1 + (if key.shift then -1 else 1)) % #order) + 1]
+			local index = table.find(FIELDS, state.focus) or 1
+			state.focus = FIELDS[((index - 1 + (if key.shift then -1 else 1)) % #FIELDS) + 1]
 			focus(state, cx)
 		elseif key.meta and string.lower(key.name) == "c" then
 			local selection = Input.selection(state.fields[state.focus])
@@ -238,38 +174,25 @@ tern.block.define("form", {
 		end
 		return true
 	end,
-	event = function(state, event, cx)
-		if event.ev == "action" and event.act == "retry" then
-			state.submitted, state.cancelled = false, false
-			state.error = if type(event.value) == "string" then event.value else "Please correct the form and try again."
-			state.errorField = nil
-			state.focusScheduled = false
-			return
-		end
-		if state.submitted then return end
-		if event.ev == "focus" then
-			for _, name in ipairs(fieldOrder(state)) do
-				if event.id == inputId(name) then
+	event = function(state, ev, cx)
+		if ev.window then state.window = ev.window end
+		if ev.ev == "action" and ev.act == "retry" then
+			-- The window couldn't start the creation.
+			fail(state, if type(ev.value) == "string" then ev.value else "Couldn't create the worktree.")
+			focus(state, cx)
+		elseif ev.ev == "focus" then
+			for _, name in FIELDS do
+				if ev.id == inputId(name) then
 					state.focus = name
 					focus(state, cx)
 					break
 				end
 			end
-		elseif event.ev == "action" then
-			if event.act == "submit" then
-				finish(state, false)
-			elseif event.act == "cancel" then
-				finish(state, true)
-			end
-			if not state.submitted then focus(state, cx) end
+		elseif ev.ev == "action" and ev.act == "cancel" then
+			cancel(state, cx)
+		elseif ev.ev == "action" and ev.act == "submit" then
+			submit(state, cx)
+			focus(state, cx)
 		end
-	end,
-	save = function(state)
-		local fields = {}
-		for name, field in pairs(state.fields) do fields[name] = field.text end
-		return {
-			token = state.token, mode = state.mode, focus = state.focus, fields = fields,
-			submitted = state.submitted, cancelled = state.cancelled,
-		}
 	end,
 })

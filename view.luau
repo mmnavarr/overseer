@@ -375,9 +375,6 @@ local function worktreeMenu(worktree)
 	if worktree.branch and not worktree.is_main and not worktree.owned then
 		table.insert(menu, { id = "create-child", label = "Create sub-worktree…", icon = "plus" })
 	end
-	if worktree.children and worktree.coordination then
-		table.insert(menu, { id = "brief-children", label = "Brief sub-worktrees…", icon = "message" })
-	end
 	if not worktree.is_main then
 		if worktree.iceboxEnabled ~= false then
 			table.insert(menu, if worktree.iced
@@ -558,8 +555,7 @@ end
 local function projectNode(model, project)
 	local collapsed = model.collapsed and model.collapsed[project.id]
 	local menu = {
-		{ id = "change-base", label = "Change base branch…", icon = "branch" },
-		{ id = "set-linear", label = "Set Linear workspace…", icon = "link" },
+		{ id = "settings", label = "Project settings…", icon = "gear" },
 	}
 	if project.coordinationKnown then
 		table.insert(menu, if project.coordination
