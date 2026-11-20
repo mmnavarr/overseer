@@ -2,6 +2,20 @@
 
 What changed in each Overseer release, newest first. Settings › Help & Diagnostics › Changelog shows the same.
 
+## 2.6.3 (2026-11-20)
+
+### Fixed
+
+- New worktrees, pull request badges and ↻ no longer stop updating until Overseer reloads. A refresh whose result Tern cut short on a busy Mac left its project marked as loading for good; Overseer now starts it again after 30 s
+
+### Changed
+
+- Overseer is lighter on Tern while its timers are paused: each creation and deletion has a watcher that finishes it the moment its setup tab does, the panel follows you straight from tab and focus changes, and the background clock only wakes Overseer's timers. It used to finish jobs and move the panel every 5 s during a pause, which tripped the hook that delivers every `wt` and `gh` result
+
+### Added
+
+- The operation log says when refreshing goes wrong: `refresh failed` and `recovered` for a listing, link read or GitHub lookup that errors, `refresh stale` when a project has had no listing for 3 minutes (and why), and `tick late` when Overseer's timers didn't run for a minute or more while the Mac was awake
+
 ## 2.6.2 (2026-11-18)
 
 ### Changed
