@@ -32,7 +32,7 @@ end
 -- on links opened from this block's pane.
 local function tellWindow(state, cx, act, fields)
 	local query = {}
-	for _, key in { "project", "branch", "name", "parent", "parentBranch" } do
+	for _, key in { "project", "branch", "name", "parent", "parentBranch", "existing" } do
 		if fields and fields[key] then table.insert(query, key .. "=" .. encode(fields[key])) end
 	end
 	local url = "tern-overseer:" .. act .. (if #query > 0 then "?" .. table.concat(query, "&") else "")
@@ -65,13 +65,13 @@ local function submit(state, cx)
 	local project = projectById(state.project)
 	if not project then fail(state, "This project is no longer in Projects."); return end
 	state.busy, state.error, state.errorField = "Checking…", nil, nil
-	wt.validate(project, branch, function(ok, err)
+	wt.validate(project, branch, state.existing, function(ok, err)
 		if not ok then
 			fail(state, err or "Couldn't check the branch name.", "branch")
 		else
 			state.busy = "Creating…"
 			local sent = tellWindow(state, cx, "create", {
-				project = project.id, branch = branch, name = name,
+				project = project.id, branch = branch, name = name, existing = if state.existing then "1" else nil,
 				parent = state.parent and state.parent.path, parentBranch = state.parent and state.parent.branch,
 			})
 			if not sent then fail(state, "Couldn't reach the Projects panel. Reload the Overseer plugin.") end
@@ -84,9 +84,12 @@ end
 local function page(state)
 	local project = projectById(state.project)
 	local base = project and project.base or "the base branch"
+	local start = if state.existing
+		then "on a branch that already exists, here or on a remote. Overseer doesn't fetch, so fetch a newly pushed branch first."
+		else "on a new branch from " .. base .. "."
 	local help = if state.parent
-		then "Nested under " .. state.parent.label .. ", on a new branch from " .. base .. "."
-		else "On a new branch from " .. base .. "."
+		then "Nested under " .. state.parent.label .. ", " .. start
+		else string.upper(string.sub(start, 1, 1)) .. string.sub(start, 2)
 	local placeholders = { branch = "feature/branch-name", name = "e.g. Fix onboarding" }
 	local labels = { branch = "Branch name", name = "Display name" }
 	local fields = {}
@@ -107,6 +110,10 @@ local function page(state)
 		ui.node("text", { key = "help", spans = {
 			ui.span(help .. " Worktrunk sets it up in a tab of its own, hooks included.", "muted"),
 		} }),
+		ui.node("row", { key = "start", gap = "sm" }, {
+			ui.button("New branch", { key = "new", size = "sm", on = not state.existing, actions = { click = "start-new" } }),
+			ui.button("Existing branch", { key = "existing", size = "sm", on = state.existing, actions = { click = "start-existing" } }),
+		}),
 		ui.node("col", { key = "fields", gap = "md" }, fields),
 	}
 	-- Errors that belong to no field (Worktrunk's refusal, a gone project) show under the fields.
@@ -136,7 +143,7 @@ tern.block.define("new-worktree", {
 			heading = if parent then "New sub-worktree" else "New worktree",
 			submitLabel = if parent then "Create sub-worktree" else "Create worktree",
 			fields = { branch = Input.new(""), name = Input.new("") },
-			focus = "branch", focusScheduled = false,
+			focus = "branch", focusScheduled = false, existing = false,
 		}
 	end,
 	title = function(state)
@@ -190,6 +197,12 @@ tern.block.define("new-worktree", {
 			end
 		elseif ev.ev == "action" and ev.act == "cancel" then
 			cancel(state, cx)
+		elseif ev.ev == "action" and (ev.act == "start-new" or ev.act == "start-existing") then
+			if not state.busy then
+				state.existing, state.error, state.errorField = ev.act == "start-existing", nil, nil
+			end
+			state.focus = "branch"
+			focus(state, cx)
 		elseif ev.ev == "action" and ev.act == "submit" then
 			submit(state, cx)
 			focus(state, cx)

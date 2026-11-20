@@ -2,6 +2,16 @@
 
 What changed in each Overseer release, newest first. Settings › Help & Diagnostics › Changelog shows the same.
 
+## 2.7.0 (2026-11-20)
+
+### Added
+
+- **Existing branch** on the New worktree page opens a worktree on a branch that's already there: a local one without a worktree, or one on a remote, which Worktrunk checks out as a local branch tracking it. Handy for reviewing someone else's pull request. Overseer doesn't fetch, so fetch a newly pushed branch first. **Create sub-worktree…** offers it too
+
+### Fixed
+
+- **New branch** refuses a name that's already a branch on a remote and points to **Existing branch**. Before, Worktrunk only warned and made an unrelated branch of that name from the base branch
+
 ## 2.6.3 (2026-11-20)
 
 ### Fixed

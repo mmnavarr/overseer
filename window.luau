@@ -2312,7 +2312,7 @@ local function launchCreation(cx, project, job)
 	end
 	local id = token()
 	local receipt = tern.plugin.data .. "/creation-" .. id .. ".status"
-	local ready, command = pcall(wt.creation_command, project, job.branch, receipt)
+	local ready, command = pcall(wt.creation_command, project, job.branch, receipt, job.existing)
 	if not ready then return command end
 	-- A background tab: the panel stays in front while setup runs.
 	local terminal = cx.layout:new_tab({ cwd = project.path, command = command }, { focus = false })
@@ -2340,6 +2340,7 @@ local function createFromPage(cx, pane, fields)
 	if fields.parent and removing(fields.parent) then pageError(cx, pane, "The parent worktree is being deleted."); return end
 	local launchError = launchCreation(cx, project, {
 		branch = fields.branch, displayName = displayName, parent = fields.parent and fields.parentBranch,
+		existing = fields.existing == "1" or nil,
 	})
 	if launchError then pageError(cx, pane, launchError); return end
 	closePage(cx, pane)
@@ -2764,7 +2765,7 @@ tern.carly.export("ticket_worktree", {
 	local project, projectError = ticketProject(cx, wanted)
 	if not project then error(projectError, 0) end
 	local branch = "feature/" .. ticket
-	wt.validate(project, branch, function(ok, err, nextCx)
+	wt.validate(project, branch, false, function(ok, err, nextCx)
 		-- Cancelling Carly before validation finishes never starts a creation.
 		if call.cancelled or not nextCx then return end
 		if not ok then call:fail(err); return end

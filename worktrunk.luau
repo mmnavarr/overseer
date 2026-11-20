@@ -367,7 +367,7 @@ end
 
 local function branch_error(branch)
 	if type(branch) ~= "string" or branch == "" then
-		return "Enter a new branch name."
+		return "Enter a branch name."
 	end
 	if string.sub(branch, 1, 1) == "-" or string.find(branch, "[%c]") or string.find(branch, "@{-", 1, true) then
 		return "Use a literal branch name without a leading dash, control characters, or @{-n} expansion."
@@ -480,50 +480,11 @@ function M.new_commits(project, from, to, limit, done)
 	end)
 end
 
-function M.validate(project, branch, done)
-	local invalid = branch_error(branch)
-	if invalid then
-		deferred_error(done, invalid)
-		return
-	end
-	git(project.path, { "check-ref-format", "--branch", branch }, function(result, err, cx)
-		if not result then
-			done(nil, err, cx)
-			return
-		end
-		if result.status ~= 0 then
-			done(nil, command_error("Invalid branch name", result), cx)
-			return
-		end
-		git(project.path, { "show-ref", "--verify", "--quiet", "refs/heads/" .. project.base }, function(base, base_err, base_cx)
-			if not base then
-				done(nil, base_err, base_cx)
-				return
-			end
-			if base.status ~= 0 then
-				done(nil, "Local base branch '" .. project.base .. "' is unavailable. Restore it or re-add the project.", base_cx)
-				return
-			end
-			git(project.path, { "show-ref", "--verify", "--quiet", "refs/heads/" .. branch }, function(existing, existing_err, existing_cx)
-				if not existing then
-					done(nil, existing_err, existing_cx)
-				elseif existing.status == 0 then
-					done(nil, "Branch '" .. branch .. "' already exists. Choose a new branch name.", existing_cx)
-				elseif existing.status == 1 then
-					done(true, nil, existing_cx)
-				else
-					done(nil, command_error("Cannot check existing branches", existing), existing_cx)
-				end
-			end)
-		end)
-	end)
-end
-
--- Rechecks the worktree's identity right before a removal, from Git's own
--- worktree list: it takes milliseconds, where `wt list` reads every worktree's
--- status (over a second, and several seconds of CPU, in a large repository).
--- Whether it's clean is local_changes' to say; the helper checks again anyway.
-function M.validate_removal(project, worktree, done)
+-- done({{path, branch?}, …}, err, cx): Git's own worktree list, the primary
+-- checkout first. It takes milliseconds, where `wt list` reads every
+-- worktree's status (over a second, and several seconds of CPU, in a large
+-- repository).
+local function git_worktrees(project, done)
 	git(project.path, { "worktree", "list", "--porcelain", "-z" }, function(result, err, cx)
 		if not result then done(nil, err, cx); return end
 		if result.status ~= 0 then done(nil, command_error("Cannot list worktrees", result), cx); return end
@@ -540,6 +501,122 @@ function M.validate_removal(project, worktree, done)
 			end
 		end
 		if record.path then table.insert(records, record) end
+		done(records, nil, cx)
+	end)
+end
+
+-- done({"origin/name", …}, err, cx): the remote-tracking branches called
+-- `branch`, one per remote that has it. check-ref-format already refused glob
+-- characters, and the `*` stops at a slash, so `origin/x/name` doesn't count.
+local function remote_branches(project, branch, done)
+	git(project.path, { "for-each-ref", "--format=%(refname:short)", "refs/remotes/*/" .. branch }, function(result, err, cx)
+		if not result then done(nil, err, cx); return end
+		if result.status ~= 0 then done(nil, command_error("Cannot list remote branches", result), cx); return end
+		local names = {}
+		for line in string.gmatch(result.stdout, "[^\n]+") do table.insert(names, line) end
+		done(names, nil, cx)
+	end)
+end
+
+-- A new branch starts from the base, so it must exist neither here nor on a
+-- remote: given a remote branch's name, Worktrunk only warns and makes an
+-- unrelated branch of that name from the base.
+local function validate_new(project, branch, done)
+	git(project.path, { "show-ref", "--verify", "--quiet", "refs/heads/" .. project.base }, function(base, base_err, base_cx)
+		if not base then
+			done(nil, base_err, base_cx)
+			return
+		end
+		if base.status ~= 0 then
+			done(nil, "Local base branch '" .. project.base .. "' is unavailable. Restore it or re-add the project.", base_cx)
+			return
+		end
+		git(project.path, { "show-ref", "--verify", "--quiet", "refs/heads/" .. branch }, function(existing, existing_err, existing_cx)
+			if not existing then
+				done(nil, existing_err, existing_cx)
+			elseif existing.status == 0 then
+				done(nil, "Branch '" .. branch .. "' already exists. Choose a new name, or Existing branch to open it.", existing_cx)
+			elseif existing.status == 1 then
+				remote_branches(project, branch, function(remotes, remote_err, remote_cx)
+					if not remotes then
+						done(nil, remote_err, remote_cx)
+					elseif #remotes > 0 then
+						done(nil, "Branch '" .. branch .. "' is on " .. remotes[1] .. ". Choose a new name, or Existing branch to open it.", remote_cx)
+					else
+						done(true, nil, remote_cx)
+					end
+				end)
+			else
+				done(nil, command_error("Cannot check existing branches", existing), existing_cx)
+			end
+		end)
+	end)
+end
+
+-- An existing branch is a local one without a worktree, or one on exactly one
+-- remote, which Worktrunk checks out as a local branch tracking it. Nothing is
+-- fetched: a branch pushed since the last fetch isn't found.
+local function validate_existing(project, branch, done)
+	git(project.path, { "show-ref", "--verify", "--quiet", "refs/heads/" .. branch }, function(existing, existing_err, existing_cx)
+		if not existing then
+			done(nil, existing_err, existing_cx)
+		elseif existing.status == 0 then
+			git_worktrees(project, function(trees, trees_err, trees_cx)
+				if not trees then done(nil, trees_err, trees_cx); return end
+				for _, tree in trees do
+					if tree.branch == branch then
+						done(nil, "Branch '" .. branch .. "' already has a worktree at " .. tree.path .. ".", trees_cx)
+						return
+					end
+				end
+				done(true, nil, trees_cx)
+			end)
+		elseif existing.status == 1 then
+			remote_branches(project, branch, function(remotes, remote_err, remote_cx)
+				if not remotes then
+					done(nil, remote_err, remote_cx)
+				elseif #remotes == 0 then
+					done(nil, "No branch '" .. branch .. "' here or on a remote. Fetch it first, or start a new branch.", remote_cx)
+				elseif #remotes > 1 then
+					done(nil, "Branch '" .. branch .. "' is on " .. table.concat(remotes, ", ")
+						.. ". Pick one first: git branch --track " .. branch .. " " .. remotes[1], remote_cx)
+				else
+					done(true, nil, remote_cx)
+				end
+			end)
+		else
+			done(nil, command_error("Cannot check existing branches", existing), existing_cx)
+		end
+	end)
+end
+
+-- done(true, nil, cx) when `branch` can get a worktree: a new branch from the
+-- base, or with `existing`, a branch that's already there.
+function M.validate(project, branch, existing, done)
+	local invalid = branch_error(branch)
+	if invalid then
+		deferred_error(done, invalid)
+		return
+	end
+	git(project.path, { "check-ref-format", "--branch", branch }, function(result, err, cx)
+		if not result then
+			done(nil, err, cx)
+			return
+		end
+		if result.status ~= 0 then
+			done(nil, command_error("Invalid branch name", result), cx)
+			return
+		end
+		if existing then validate_existing(project, branch, done) else validate_new(project, branch, done) end
+	end)
+end
+
+-- Rechecks the worktree's identity right before a removal, from Git's own
+-- worktree list. Whether it's clean is local_changes' to say; the helper
+-- checks again anyway.
+function M.validate_removal(project, worktree, done)
+	git_worktrees(project, function(records, err, cx)
+		if not records then done(nil, err, cx); return end
 		for index, current in records do
 			if current.path == worktree.path then
 				-- Git lists the primary checkout first.
@@ -621,9 +698,11 @@ local function operation_command(mode, project, target, option, receipt)
 	return "/bin/bash -c '" .. table.concat(program) .. "'"
 end
 
-function M.creation_command(project, branch, receipt)
+-- An existing branch goes to `wt switch` without --create or a base.
+function M.creation_command(project, branch, receipt, existing)
 	local invalid = branch_error(branch)
 	if invalid then error(invalid, 0) end
+	if existing then return operation_command("existing", project, branch, "", receipt) end
 	return operation_command("create", project, branch, project.base, receipt)
 end
 
