@@ -11,6 +11,8 @@ local update = require("./update")
 local cache = {}
 -- Helper liveness probes: job id -> true while `kill -0` runs; dead[id] once it failed.
 local probing, dead = {}, {}
+-- Running jobs' receipt watchers: job id -> { child } (see watchJob).
+local watchers = {}
 local rendered = {}
 local collapsed = {}
 -- Parent worktrees whose sub-worktrees are folded away: path -> true. In memory, like `collapsed`.
@@ -21,23 +23,34 @@ local notice
 local NOTICE_KEEP_S = 6
 local problem
 local lastRefresh = -15000
--- Whether ↻ is spinning for an explicit refresh.
-local spinning = false
+-- When ↻ started spinning for an explicit refresh (tern.now() ms), or nil.
+local spinning = nil
 local sequence = 0
 -- The Linear CLI's workspace, for projects without one of their own: nil until
 -- looked up, false when unavailable (↻ tries again).
 local linearDefault
 -- Defined with the coordination rails; refreshes call them.
 local railsAfterListing, railsAfterLinks, railsAfterPullRequests, railsAfterSwitch
--- Defined with the tick; every event checks it.
-local ensureTicking
--- When Tern paused the timer hook, until when (tern.now() ms); 0 when running.
--- Every timer waits out a pause (5 s, doubling on repeats to 5 min), so while
--- one lasts, clicks, commands and the draws they ask for run in the callback
--- at hand instead of a timer (see userAction and redraw).
-local timerPausedUntil = 0
+-- Defined with the jobs; launching one starts its watcher.
+local watchJob
+-- Until when Tern paused each of Overseer's hooks (tern.now() ms), from the
+-- `budget` event; a resumed hook records when it resumed. Every timer waits
+-- out a pause (5 s, doubling on repeats to 5 min), so while one lasts, clicks,
+-- commands, follows and the draws they ask for run in the callback at hand
+-- instead of a timer (see userAction, redraw and followFrom).
+local pausedUntil = {}
 local function timerPaused()
-	return tern.now() < timerPausedUntil
+	return tern.now() < (pausedUntil.timer or 0)
+end
+
+-- Work still waiting on a process result (a listing, a PR lookup, ↻'s spin) is
+-- marked with when it started. A result callback Tern cuts short never clears
+-- its mark, so a mark this much older than the start, or than the process
+-- hook's last pause, is lost and the work may start again. While the process
+-- hook is paused, results wait for it, so nothing counts as lost.
+local LOST_MS = 30000
+local function lost(since)
+	return tern.now() - math.max(since, pausedUntil.process or 0) > LOST_MS
 end
 
 local function records(key)
@@ -471,7 +484,7 @@ local function model(cx)
 	local newer = update.available()
 	local result = {
 		projects = {}, collapsed = collapsed, confirmation = confirmation,
-		showIcebox = showIcebox, iceboxEnabled = iceboxOn, refreshing = spinning,
+		showIcebox = showIcebox, iceboxEnabled = iceboxOn, refreshing = spinning ~= nil,
 		-- A newer Overseer this copy can update to: the header's Update button.
 		update = if newer then { latest = newer, installed = update.installed } else nil,
 		-- Kept a little past the toast's own 5.2 s, then dropped from the view.
@@ -484,7 +497,7 @@ local function model(cx)
 		local coordinating = entry ~= nil and entry.coordination == true
 		local row = {
 			id = project.id, name = project.name, path = project.path, base = project.base,
-			loading = not entry or entry.loading, error = entry and entry.error, worktrees = {}, hiddenIced = 0,
+			loading = not entry or entry.loading ~= nil, error = entry and entry.error, worktrees = {}, hiddenIced = 0,
 			total = entry and entry.worktrees and #entry.worktrees or 0,
 			coordination = coordinating, coordinationKnown = entry ~= nil and entry.coordination ~= nil,
 		}
@@ -740,7 +753,44 @@ local function redraw(cx)
 	end)
 end
 
+-- Marks `entry[key]` as started now and returns the mark, or nil while a run
+-- that isn't lost holds it. Taking over a lost mark goes in the operation log.
+local function claim(entry, key, project, what)
+	local since = entry[key]
+	if since ~= nil and not lost(since) then return nil end
+	if since ~= nil then
+		oplog.write("warn", { op = "refresh", event = "lost", project = project.name,
+			detail = string.format("%s gave no result for %.0f s; started again", what, (tern.now() - since) / 1000) })
+	end
+	local mark = tern.now()
+	entry[key] = mark
+	return mark
+end
+
+-- Clears `entry[key]` if `mark` still holds it (a lost run's late result doesn't
+-- clear the run that took over).
+local function release(entry, key, mark)
+	if entry[key] == mark then entry[key] = nil end
+end
+
 local PR_REFRESH_MS = 120000
+
+-- A refresh step's failures go in the operation log when they start or change,
+-- and so does the step working again; repeats of the same error don't.
+local function track(project, entry, what, ok, err)
+	entry.failing = entry.failing or {}
+	local before = entry.failing[what]
+	if not ok then
+		err = tostring(err or "no result")
+		if before and before.err == err then return end
+		entry.failing[what] = { err = err, since = if before then before.since else tern.now() }
+		oplog.write("warn", { op = "refresh", event = "failed", project = project.name, detail = what .. ": " .. err })
+	elseif before then
+		entry.failing[what] = nil
+		oplog.write("info", { op = "refresh", event = "recovered", project = project.name,
+			detail = string.format("%s works again after %.0f s", what, (tern.now() - before.since) / 1000) })
+	end
+end
 
 -- Pull request badges are best-effort: without gh, GitHub access, or a GitHub
 -- origin they simply don't appear. Stale results stay visible until a lookup
@@ -752,17 +802,14 @@ local function refreshPullRequests(project, entry)
 	end
 	table.sort(branches)
 	local key = table.concat(branches, "\0")
-	if entry.prLoading then return end
 	if key == entry.prKey and entry.prAt and tern.now() - entry.prAt < PR_REFRESH_MS then return end
-	entry.prLoading = true
+	local mark = claim(entry, "prLoading", project, "GitHub PR lookup")
+	if not mark then return end
 	wt.pull_requests(project, branches, function(found, err, cx)
-		entry.prLoading, entry.prAt = false, tern.now()
-		if found then
-			entry.prs, entry.prKey, entry.prError = found, key, nil
-		elseif err ~= entry.prError then
-			entry.prError = err
-			tern.log.warn("Pull requests unavailable for " .. project.name .. ": " .. tostring(err))
-		end
+		release(entry, "prLoading", mark)
+		entry.prAt = tern.now()
+		if found then entry.prs, entry.prKey = found, key end
+		track(project, entry, "GitHub PR lookup", found ~= nil, err)
 		if cx then redraw(cx) end
 		if found and cx then railsAfterPullRequests(cx, project, entry) end
 	end)
@@ -772,22 +819,15 @@ end
 -- and whether agent coordination is on, read beside each listing. A failed
 -- read keeps the last values, so rows don't jump out of their parents.
 local function refreshLinks(project, entry)
-	if entry.linksLoading then return end
-	entry.linksLoading = true
+	local mark = claim(entry, "linksLoading", project, "Sub-worktree links")
+	if not mark then return end
 	wt.links(project, function(found, err, cx)
-		if found then
-			entry.parents, entry.leads, entry.linksError = found.parents, found.leads, nil
-		elseif err ~= entry.linksError then
-			entry.linksError = err
-			tern.log.warn("Sub-worktree links unavailable for " .. project.name .. ": " .. tostring(err))
-		end
+		if found then entry.parents, entry.leads = found.parents, found.leads end
+		track(project, entry, "Sub-worktree links", found ~= nil, err)
 		wt.coordination(project, function(on, switchErr, nextCx)
-			entry.linksLoading = false
-			if on ~= nil then
-				entry.coordination = on
-			else
-				tern.log.warn("Overseer: couldn't read agent coordination for " .. project.name .. ": " .. tostring(switchErr))
-			end
+			release(entry, "linksLoading", mark)
+			if on ~= nil then entry.coordination = on end
+			track(project, entry, "Agent coordination setting", on ~= nil, switchErr)
 			if nextCx then
 				redraw(nextCx)
 				if on ~= nil then railsAfterSwitch(nextCx, project, entry) end
@@ -885,19 +925,28 @@ local function refresh(cx, done)
 	for _, project in projects() do
 		local entry = cache[project.id]
 		if not entry then
-			entry = { worktrees = {} }
+			entry = { worktrees = {}, since = tern.now() }
 			cache[project.id] = entry
 		end
-		if not entry.loading then
-			entry.loading = true
+		local mark = claim(entry, "loading", project, "wt list")
+		if mark then
 			pending += 1
 			refreshLinks(project, entry)
 			local started = tern.now()
 			wt.list(project, function(worktrees, err, nextCx)
-				entry.loading, entry.error, entry.listMs = false, err, tern.now() - started
+				release(entry, "loading", mark)
+				entry.error, entry.listMs = err, tern.now() - started
+				track(project, entry, "Worktree listing", worktrees ~= nil, err)
 				local previous = {}
 				for _, tree in entry.worktrees do previous[tree.path] = tree.head end
-				if worktrees then entry.worktrees = worktrees end
+				if worktrees then
+					entry.worktrees, entry.listedAt = worktrees, tern.now()
+					if entry.staleSince then
+						oplog.write("info", { op = "refresh", event = "fresh", project = project.name,
+							detail = string.format("listed again after %.0f s", (tern.now() - entry.staleSince) / 1000) })
+						entry.staleSince = nil
+					end
+				end
 				if worktrees and nextCx then
 					reconcileGone(nextCx, project, entry)
 					railsAfterListing(nextCx, project, entry, previous)
@@ -913,13 +962,35 @@ local function refresh(cx, done)
 	redraw(cx)
 end
 
+-- A project without a worktree listing for this long goes in the operation
+-- log once, with where its refresh is stuck; its next listing logs `fresh`.
+-- An open panel lists every 15 s to 2 min (listingCost), so this is a stall.
+local LISTING_STALE_MS = 180000
+local function watchListings()
+	local now = tern.now()
+	for id, entry in cache do
+		local last = entry.listedAt or entry.since or now
+		if not entry.staleSince and now - last > LISTING_STALE_MS then
+			entry.staleSince = last
+			local failing = entry.failing and entry.failing["Worktree listing"]
+			local state = if entry.loading then string.format("wt list started %.0f s ago and hasn't answered", (now - entry.loading) / 1000)
+				elseif failing then "failing: " .. failing.err
+				else string.format("none started; the last refresh began %.0f s ago", (now - lastRefresh) / 1000)
+			local project = projectById(id)
+			oplog.write("warn", { op = "refresh", event = "stale", project = if project then project.name else id,
+				detail = string.format("no worktree listing for %.0f s; %s", (now - last) / 1000, state) })
+		end
+	end
+end
+
 -- ↻ spins from an explicit refresh until its worktree listings finish, and
 -- for at least one turn so a fast refresh is still visible.
 local SPIN_MIN_MS = 800
 
 local function refreshByHand(cx)
-	if spinning then return end
-	spinning = true
+	if spinning ~= nil and not lost(spinning) then return end
+	local mark = tern.now()
+	spinning = mark
 	local started = tern.now()
 	-- An explicit refresh also re-checks pull requests immediately.
 	for _, entry in cache do entry.prAt = nil end
@@ -927,7 +998,7 @@ local function refreshByHand(cx)
 	update.check(redraw, true)
 	refresh(cx, function(doneCx)
 		local function stop(stopCx)
-			spinning = false
+			if spinning == mark then spinning = nil end
 			if stopCx then redraw(stopCx) end
 		end
 		local left = started + SPIN_MIN_MS - tern.now()
@@ -1926,6 +1997,7 @@ local function beginRemoval(cx, request)
 			session = target,
 		}
 		tern.kv.set("jobs", jobs)
+		watchJob(jobId, jobs[jobId])
 		oplog.write("info", { op = "remove", event = "started", project = project.name, branch = worktree.branch,
 			path = worktree.path, detail = if force then "forced" else nil })
 		removalChecks[request.path] = nil
@@ -2251,6 +2323,7 @@ local function launchCreation(cx, project, job)
 	local jobs = records("jobs")
 	jobs[id] = job
 	tern.kv.set("jobs", jobs)
+	watchJob(id, job)
 	oplog.write("info", { op = "create", event = "started", project = project.name, branch = job.branch })
 	return nil
 end
@@ -2464,9 +2537,11 @@ local function jobFinished(cx, job, status)
 	end
 end
 
--- `inline` finishes jobs in this callback instead of one of their own: the
--- process clock does that when timers may not be running.
-local function checkJobs(cx, inline)
+-- Finished jobs wrap up in a callback of their own, or right here while Tern
+-- has paused the timer hook (see userAction). Runs from each job's watcher and,
+-- as a backstop (a helper that died without a receipt, a watcher that couldn't
+-- start), from the tick.
+local function checkJobs(cx)
 	local jobs = records("jobs")
 	local finished = {}
 	for id, job in jobs do
@@ -2486,17 +2561,49 @@ local function checkJobs(cx, inline)
 	tern.kv.set("jobs", jobs)
 	for id, done in finished do
 		probing[id], dead[id] = nil, nil
+		local watcher = watchers[id]
+		watchers[id] = nil
+		if watcher then watcher.child:kill() end
 		for _, file in { done.job.receipt, done.job.receipt .. ".pid" } do
 			if tern.fs.exists(file) then tern.fs.remove(file) end
 		end
-		if inline then
-			local ok, err = pcall(jobFinished, cx, done.job, done.status)
-			if not ok then tern.log.warn("Overseer: finish job failed: " .. tostring(err)) end
-		else
-			separately("finish job", function(nextCx) jobFinished(nextCx, done.job, done.status) end)
-		end
+		userAction("finish job", function(nextCx) jobFinished(nextCx, done.job, done.status) end, cx)
 	end
 	refresh(cx)
+end
+
+-- Each running job has a watcher: a process that ends once the helper's
+-- receipt is in, or the helper is gone without one. Its end arrives in the
+-- process hook, so a job finishes when it does even while Tern has paused the
+-- timer hook (up to 5 minutes) or runs no timers in an idle window. It gives
+-- up after 12 hours; `unload` stops it and the next load starts another.
+local WATCH_SCRIPT = [[
+i=0
+while [ ! -e "$0" ]; do
+	[ "$i" -ge 43200 ] && exit 1
+	if [ -r "$0.pid" ] && read -r pid 2>/dev/null < "$0.pid" && [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then exit 0; fi
+	sleep 1
+	i=$((i + 1))
+done
+]]
+
+watchJob = function(id, job)
+	if watchers[id] or type(job.receipt) ~= "string" then return end
+	local watcher = {}
+	local ok, child = pcall(tern.process.spawn, { "/bin/sh", "-c", WATCH_SCRIPT, job.receipt }, {
+		exit = function(result, cx)
+			if watchers[id] == watcher then watchers[id] = nil end
+			-- Killed (the job finished elsewhere) or gave up: the tick still checks.
+			if result.status ~= 0 or not cx or not localHost(cx) then return end
+			userAction("job check", checkJobs, cx)
+		end,
+	})
+	if not ok then
+		tern.log.warn("Overseer: couldn't watch job " .. tostring(id) .. ": " .. tostring(child))
+		return
+	end
+	watcher.child = child
+	watchers[id] = watcher
 end
 
 -- Creations' progress, read from their setup tab each tick: the step they're
@@ -2796,7 +2903,6 @@ for _, act in {
 -- the hook and swallow clicks until the pause ends.
 tern.on("canvas_action", function(ev, cx)
 	if not CANVAS_ACTIONS[ev.act] then return false end
-	ensureTicking("click")
 	userAction("click " .. ev.act, function(nextCx) canvasAction(ev, nextCx) end, cx)
 	return true
 end)
@@ -2828,6 +2934,13 @@ end)
 local followQueued, followDraws = false, false
 local TICK_DRAW_MS = 5000
 local lastTickDraw = -TICK_DRAW_MS
+local function followNow(cx, drawIt)
+	local ok, err = pcall(follow, cx)
+	if not ok then tern.log.warn("Projects panel: " .. tostring(err)) end
+	ok, err = pcall(markSeen, cx)
+	if not ok then tern.log.warn("Overseer: agent marks: " .. tostring(err)) end
+	if drawIt then redraw(cx) end
+end
 local function followSoon(quiet)
 	followDraws = followDraws or not quiet
 	if followQueued then return end
@@ -2836,41 +2949,63 @@ local function followSoon(quiet)
 		followQueued = false
 		local drawIt = followDraws
 		followDraws = false
-		if not cx then return end
-		local ok, err = pcall(follow, cx)
-		if not ok then tern.log.warn("Projects panel: " .. tostring(err)) end
-		ok, err = pcall(markSeen, cx)
-		if not ok then tern.log.warn("Overseer: agent marks: " .. tostring(err)) end
-		if drawIt then redraw(cx) end
+		if cx then followNow(cx, drawIt) end
 	end)
+end
+-- From an event: soon, or while Tern has paused the timer hook, at once (like
+-- userAction), so the panel doesn't wait out the pause in the tab you left.
+local function followFrom(cx)
+	if cx and timerPaused() then followNow(cx, true) else followSoon() end
 end
 
 -- Each piece of a tick runs in a callback of its own. The next tick is
--- queued first, so an error can't stop the ticks.
---
--- The tick has stopped for long stretches without Tern pausing or logging
--- anything (2.3.0: jobs left unfinished for an hour until something restarted
--- it), so its health is watched from outside the timer hook: a generation
--- number lets a restart retire a lost chain, and `ensureTicking` runs from
--- every event and from a clock driven by a process (the process hook has a
--- budget of its own), restarting the tick when it is overdue.
+-- queued first, so an error can't stop the ticks. What can't wait for a tick
+-- (jobs finishing, the panel following you) has its own triggers (watchJob,
+-- followFrom).
 local TICK_MS = 750
-local TICK_STALL_MS = 5000
-local tickGeneration = 0
-local lastTick = tern.now()
+-- A gap this long between ticks, beyond the time the Mac slept, goes in the
+-- operation log when the tick runs again (`tick late`): the wake process
+-- should keep gaps to a few seconds outside timer pauses. Wall-clock seconds;
+-- the Mac's last sleep comes from `sysctl kern.sleeptime kern.waketime`, so a
+-- sleep (overnight: one every 15 minutes or so, between dark wakes) isn't
+-- reported as a stall.
+local TICK_GAP_S = 60
+local lastTickAt = os.time()
 local tick
 local settingsRev = tern.kv.get("settings-rev")
 
-local function scheduleTick(generation)
-	budget.later("tick", TICK_MS, function(cx) tick(generation, cx) end)
+local function scheduleTick()
+	budget.later("tick", TICK_MS, tick)
 end
 
-tick = function(generation, cx)
-	-- A chain a restart replaced ends here, so two never run side by side.
-	if generation ~= tickGeneration then return end
-	scheduleTick(generation)
-	lastTick = tern.now()
+local function reportGap(from, to, paused)
+	wt.spawn({ "/usr/sbin/sysctl", "-n", "kern.sleeptime", "kern.waketime" }, { timeout_ms = 5000 }, function(result)
+		local slept = 0
+		local output = if result and result.status == 0 then result.stdout else ""
+		-- Each line is `{ sec = N, usec = N } <date>`: sleep first, then wake.
+		local sleptAt, wokeAt = string.match(output, "{ sec = (%d+).-{ sec = (%d+)")
+		sleptAt, wokeAt = tonumber(sleptAt), tonumber(wokeAt)
+		if sleptAt and wokeAt and sleptAt >= from and wokeAt <= to and wokeAt > sleptAt then slept = wokeAt - sleptAt end
+		if to - from - slept < TICK_GAP_S then return end
+		local notes = {}
+		if slept > 0 then table.insert(notes, string.format("the Mac slept %d s of it", slept)) end
+		if paused then table.insert(notes, "Tern paused the timer hook in between") end
+		oplog.write("warn", { op = "tick", event = "late", detail = string.format("no tick for %d s%s", to - from,
+			if #notes > 0 then "; " .. table.concat(notes, "; ") else "") })
+	end)
+end
+
+tick = function(cx)
+	scheduleTick()
+	local now = os.time()
+	local from = lastTickAt
+	lastTickAt = now
+	if now - from >= TICK_GAP_S then
+		-- A pause that ended within the gap explains up to 5 minutes of it.
+		reportGap(from, now, tern.now() - (pausedUntil.timer or -math.huge) < (now - from) * 1000)
+	end
 	if not cx or not localHost(cx) then return end
+	watchListings()
 	-- Settings changed (settings.luau bumps the rev): read Git config and the
 	-- listings again, and draw.
 	local rev = tern.kv.get("settings-rev")
@@ -2916,67 +3051,44 @@ tick = function(generation, cx)
 	followSoon(not clocks)
 end
 
--- Restarts the tick when it is overdue and Tern hasn't paused the timer hook
--- (a pause holds due timers on purpose). Returns whether it restarted.
-ensureTicking = function(source)
-	local now = tern.now()
-	local gap = now - lastTick
-	if gap < TICK_STALL_MS or now < timerPausedUntil then return false end
-	tickGeneration += 1
-	lastTick = now
-	scheduleTick(tickGeneration)
-	oplog.write("warn", { op = "tick", event = "restarted",
-		detail = string.format("no tick for %.0f s; restarted from %s", gap / 1000, source) })
-	return true
-end
-
--- A second clock, outside the timer hook: one long-lived process prints a
--- line every CLOCK_S, and each line runs in the process hook. When the tick
--- turns out to be overdue it is restarted. While timers can't run (the tick
--- was overdue, or Tern paused the timer hook, which doubles to minutes on
--- repeat trips), this clock finishes jobs whose receipts are in and keeps the
--- panel in the shown tab, so neither waits for timers to come back.
--- `unload` stops it; it also ends itself after CLOCK_LINES lines and is
--- started again, so a copy a reload failed to stop doesn't run on for long.
-local CLOCK_S, CLOCK_LINES = 5, 720
-local clock = nil
+-- Tern runs a window's plugin timers only when something wakes the window,
+-- such as a plugin event or a process's output. The end of a timer pause
+-- doesn't (measured on Tern 0.9.28: a 1 s timer chain stood still for a
+-- minute after a 5 s pause, and an idle window ran it only at each wake), and
+-- typing in a terminal seems not to: 2.6.3's development build, without this,
+-- left the panel's listings stale for an hour.
+-- A process printing a line every WAKE_S wakes it; its callback does nothing,
+-- so it can't trip the process hook. It ends itself after WAKE_LINES lines and
+-- is started again, so a copy a failed reload left behind doesn't run on.
+local WAKE_S, WAKE_LINES = 5, 720
+local wake = nil
 local unloading = false
 
-local function onClock(cx)
-	if not cx or not localHost(cx) then return end
-	local restarted = ensureTicking("the process clock")
-	if restarted or timerPaused() then
-		checkJobs(cx, true)
-		local followed, err = pcall(follow, cx)
-		if not followed then tern.log.warn("Projects panel: " .. tostring(err)) end
-	end
-end
-
-local function startClock()
+local function startWake()
 	local started = tern.now()
-	local script = string.format('i=0; while [ "$i" -lt %d ]; do sleep %d; echo tick; i=$((i+1)); done', CLOCK_LINES, CLOCK_S)
+	local script = string.format('i=0; while [ "$i" -lt %d ]; do sleep %d; echo; i=$((i + 1)); done', WAKE_LINES, WAKE_S)
 	local ok, child = pcall(tern.process.spawn, { "/bin/sh", "-c", script }, {
-		stdout = function(_line, cx)
-			local ran, err = pcall(onClock, cx)
-			if not ran then tern.log.warn("Overseer: clock failed: " .. tostring(err)) end
-		end,
+		stdout = function() end,
 		exit = function(result)
-			clock = nil
+			wake = nil
 			if unloading then return end
-			-- One that dies at once would only die again: events still check the tick.
-			if tern.now() - started < CLOCK_S * 1000 then
-				tern.log.warn("Overseer: the process clock stopped (status " .. tostring(result.status) .. ")")
+			-- One that dies at once would only die again.
+			if tern.now() - started < WAKE_S * 1000 then
+				tern.log.warn("Overseer: the wake process stopped (status " .. tostring(result.status) .. ")")
 				return
 			end
-			startClock()
+			startWake()
 		end,
 	})
-	if ok then clock = child else tern.log.warn("Overseer: the process clock could not start: " .. tostring(child)) end
+	if ok then wake = child else tern.log.warn("Overseer: the wake process could not start: " .. tostring(child)) end
 end
 
+-- The wake process and the job watchers end with this VM; the next load
+-- starts new ones.
 tern.on("unload", function()
 	unloading = true
-	if clock then clock:kill() end
+	if wake then wake:kill() end
+	for _, watcher in watchers do watcher.child:kill() end
 end)
 
 tern.on("window_start", function(_cx)
@@ -2987,16 +3099,12 @@ end)
 -- session ended by another window or `tern kill session` fires no
 -- pane_closed here, only session_ended.
 for _, name in { "focus", "tab_created", "tab_closed", "pane_created", "pane_closed", "session_ended" } do
-	tern.on(name, function(_ev, _cx)
-		ensureTicking(name)
-		followSoon()
-	end)
+	tern.on(name, function(_ev, cx) followFrom(cx) end)
 end
 -- An agent starting again clears its finished mark; any change redraws. The
 -- rails record and relay the change, and an agent appearing or leaving can
 -- change a worktree's overseer session.
 tern.on("agent_state", function(ev, _cx)
-	ensureTicking("agent_state")
 	agentStates[ev.pane] = ev.new
 	if ev.new == "working" or ev.new == "waiting_input" then
 		separately("agent state", function() setFinished(ev.pane, nil) end)
@@ -3028,14 +3136,13 @@ end)
 -- process results wait for the pause, so catching up is one follow and draw.
 tern.on("budget", function(ev, _cx)
 	tern.log.warn(budget.describe(ev))
-	if ev.hook == "timer" then
-		timerPausedUntil = if ev.state == "paused" then tern.now() + (ev.paused_ms or 0) + 1000 else 0
-	end
+	pausedUntil[ev.hook] = if ev.state == "paused" then tern.now() + (ev.paused_ms or 0) + 1000 else tern.now()
 	if ev.state == "resumed" then followSoon() end
 end)
 -- Timers are restarted on reload; window_start intentionally is not.
-scheduleTick(tickGeneration)
-startClock()
+scheduleTick()
+startWake()
+for id, job in records("jobs") do watchJob(id, job) end
 -- Every load, so a fresh install or an upgrade to a new plugin dir links omp to this copy.
 budget.later("omp link", 0, function() omplink.ensure() end)
 -- 2.1's self-reload cooldown; nothing reads it any more.
