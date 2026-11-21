@@ -63,7 +63,7 @@ That's it. Tern downloads Overseer into its own plugins folder and loads it; no 
 1. **Show Projects** with <kbd>⌘</kbd><kbd>⌥</kbd><kbd>⇧</kbd><kbd>P</kbd>.
 2. **Add a repo** with **+** in the panel's header.
 3. **Open a worktree** by clicking its row.
-4. **Start a new one** with **+** next to a project.
+4. **Start a new one** with **+** next to a project, on a new branch or one that already exists (yours, or a teammate's on the remote).
 5. **Right-click** a worktree or project for everything else, and open **Settings** with the cog next to Projects: the Ice Box, each project's base branch, Linear workspace and agent coordination, your GitHub and Linear sign-ins, and the changelog.
 
 <table>

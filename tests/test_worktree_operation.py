@@ -212,6 +212,35 @@ class WorktreeOperationTests(unittest.TestCase):
         self.assertNotEqual(self.git("rev-parse", branch), self.git("rev-parse", "master"))
         self.assertIn("branch refs/heads/" + branch, self.git("worktree", "list", "--porcelain"))
 
+    def test_existing_mode_opens_local_branch_without_moving_it(self):
+        branch = "feature/é'$literal;quote"
+        self.git("branch", branch)
+        tip = self.git("rev-parse", branch)
+        (self.repo / "tracked.txt").write_text("newer master\n")
+        self.git("commit", "-am", "advance master")
+        result = self.operation("existing", branch, "")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.git("rev-parse", branch), tip)
+        self.assertIn("branch refs/heads/" + branch, self.git("worktree", "list", "--porcelain"))
+        self.assertEqual((self.root / "completion.status").read_text(), "0\n")
+
+    def test_existing_mode_checks_out_remote_branch_tracking_it(self):
+        origin = self.root / "origin.git"
+        self.git("init", "--bare", str(origin))
+        self.git("remote", "add", "origin", str(origin))
+        branch = "review/their-work"
+        self.git("checkout", "-b", branch)
+        (self.repo / "tracked.txt").write_text("their change\n")
+        self.git("commit", "-am", "their change")
+        self.git("push", "origin", "master", branch)
+        self.git("checkout", "master")
+        self.git("branch", "-D", branch)
+        result = self.operation("existing", branch, "")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.git("rev-parse", branch), self.git("rev-parse", "origin/" + branch))
+        self.assertEqual(self.git("rev-parse", "--abbrev-ref", branch + "@{upstream}"), "origin/" + branch)
+        self.assertIn("branch refs/heads/" + branch, self.git("worktree", "list", "--porcelain"))
+
 
 if __name__ == "__main__":
     unittest.main()

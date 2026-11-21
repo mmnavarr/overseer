@@ -14,7 +14,7 @@ target=$4
 option=$5
 receipt=$6
 case "$mode" in
-    create) label='Worktree creation' ;;
+    create|existing) label='Worktree creation' ;;
     remove|force-remove) label='Worktree removal' ;;
     *) printf 'Unknown operation: %s\n' "$mode" >&2; exit 64 ;;
 esac
@@ -109,6 +109,9 @@ remove_worktree() {
 # project/user hooks see the original terminal and retain approval prompts.
 if [ "$mode" = create ]; then
     "$wt" -C "$repo" switch --create --base "$option" --no-cd "$target"
+elif [ "$mode" = existing ]; then
+    # A local branch, or a remote one Worktrunk checks out tracking it. OPTION is unused.
+    "$wt" -C "$repo" switch --no-cd "$target"
 elif [ "$mode" = force-remove ]; then
     remove_worktree yes
 else
